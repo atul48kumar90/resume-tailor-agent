@@ -1,21 +1,26 @@
 fastapi
 uvicorn
+gunicorn
+
+python-dotenv
 python-multipart
 
 openai
 langchain
+langchain-openai
 pydantic
-
-python-docx
-nltk
-scikit-learn
-numpy
-
 tenacity
 tiktoken
+
+numpy
+scikit-learn
+nltk
+
+python-docx
+pypdf
 
 rich
 loguru
 typer
 
-gunicorn
+redis

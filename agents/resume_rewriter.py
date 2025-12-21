@@ -1,36 +1,38 @@
+# agents/resume_rewriter.py
 import json
-from core.llm import get_llm
+import re
+from core.llm import smart_llm_call
+from core.prompts import RESUME_REWRITE_PROMPT
 
-llm = get_llm()
+
+def _extract_json(text: str) -> dict:
+    match = re.search(r"\{[\s\S]*\}", text)
+    if not match:
+        raise ValueError("Invalid JSON")
+
+    return json.loads(match.group())
 
 
-def rewrite(jd: str, resume: str) -> dict:
-    """
-    Rewrite resume to align with job description.
-    Minimal implementation for now.
-    """
+def rewrite(job_description: str, resume: str) -> dict:
+    try:
+        raw = smart_llm_call(
+            RESUME_REWRITE_PROMPT.format(
+                job_description=job_description,
+                resume=resume
+            )
+        )
+        data = _extract_json(raw)
 
-    prompt = f"""
-    You are a resume rewriting assistant.
+        return {
+            "summary": data.get("summary", ""),
+            "experience": data.get("experience", []),
+            "skills": data.get("skills", []),
+        }
 
-    Rules:
-    - Do NOT add fake experience
-    - Only rewrite based on provided resume
-    - Optimize wording for ATS
-
-    Job Description:
-    {jd}
-
-    Resume:
-    {resume}
-
-    Return STRICT JSON:
-    {{
-      "summary": "",
-      "experience": [],
-      "skills": []
-    }}
-    """
-
-    response = llm.predict(prompt)
-    return json.loads(response)
+    except Exception as e:
+        return {
+            "summary": "",
+            "experience": [],
+            "skills": [],
+            "error": str(e),
+        }
