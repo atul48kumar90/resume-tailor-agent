@@ -1,128 +1,179 @@
-# agents/ats_scorer.py
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
-# -----------------------
-# Keyword aliases (ATS realism)
-# -----------------------
+# =========================================================
+# SAFE COMPOSITE INFERENCE (ATS-REALISTIC)
+# =========================================================
+# Composite inference is allowed ONLY when industry truth holds.
+# These mappings are conservative and auditable.
+COMPOSITE_SKILLS = {
+    # Spring Boot cannot exist without Java
+    "java": ["spring boot", "spring"],
+
+    # REST APIs almost always exchange JSON
+    "json": ["rest api", "rest"],
+
+    # Relational DB inference (generic, safe)
+    "relational databases": ["sql", "database", "schema"],
+
+    # Architecture (soft inference)
+    "cloud-based architecture design": [
+        "distributed",
+        "scalable",
+        "microservices",
+    ],
+
+    "large-scale backend systems": [
+        "distributed",
+        "scalable",
+        "microservices",
+    ],
+
+    "documentation best practices": [
+        "documentation",
+        "design docs",
+        "hld",
+        "lld",
+    ],
+
+    "security best practices": [
+        "authentication",
+        "authorization",
+        "access",
+    ],
+}
+
+
+# =========================================================
+# Keyword aliases
+# =========================================================
 
 KEYWORD_ALIASES = {
-    "kubernetes": ["k8s"],
     "spring boot": ["spring", "springboot"],
     "microservices": ["micro-services", "micro services"],
     "postgresql": ["postgres"],
     "javascript": ["js"],
 }
 
+
 KEYWORD_CONTEXT_SIGNALS = {
-    "kubernetes": [
-        "container orchestration",
-        "eks",
-        "gke",
-        "aks",
-        "helm",
-        "containerized workloads",
-    ],
-    "redis": [
-        "cache",
-        "caching layer",
-        "in-memory store",
-    ],
-    "microservices": [
-        "distributed services",
-        "service-oriented",
-        "loosely coupled services",
-    ],
-    "spring boot": [
-        "spring",
-        "rest api",
-        "dependency injection",
-    ],
-    "docker": [
-        "containerized",
-        "dockerized",
-    ],
+    "docker": ["containerized", "dockerized"],
+    "redis": ["cache", "caching", "in-memory"],
+    "microservices": ["distributed", "loosely coupled"],
+    "spring boot": ["dependency injection", "rest api"],
 }
 
 
-
-# -----------------------
+# =========================================================
 # Helpers
-# -----------------------
+# =========================================================
 
 def _normalize(text: str) -> str:
     text = re.sub(r"[^a-z0-9+.#]", " ", text.lower())
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _tokenize(text: str) -> set[str]:
     return set(_normalize(text).split())
 
 
-def _match_keyword(keyword: str, tokens: set[str]) -> str | None:
-    keyword_tokens = _tokenize(keyword)
+# ---------------------------------------------------------
+# SAFE composite matcher (FINAL)
+# ---------------------------------------------------------
 
-    # 1️⃣ Exact match
-    if keyword_tokens.issubset(tokens):
+def _match_composite(keyword: str, tokens: set[str]) -> bool:
+    """
+    SAFE composite inference (ATS-realistic)
+
+    Rules:
+    - Token overlap (not full subset)
+    - Strong-signal shortcut
+    - Otherwise ≥50% signal coverage
+    """
+
+    parts = COMPOSITE_SKILLS.get(keyword.lower())
+    if not parts:
+        return False
+
+    hits = 0
+    for p in parts:
+        p_tokens = set(_tokenize(p))
+        if tokens & p_tokens:
+            hits += 1
+
+    # Strong-signal shortcut (e.g. Spring → Java)
+    if hits >= 1 and len(parts) <= 2:
+        return True
+
+    return hits >= max(1, len(parts) // 2)
+
+
+# ---------------------------------------------------------
+# Keyword matcher
+# ---------------------------------------------------------
+
+def _match_keyword(keyword: str, tokens: set[str]) -> Optional[str]:
+    """
+    Returns:
+      exact | alias | context | composite | None
+    """
+    kw = keyword.lower()
+    kw_tokens = _tokenize(kw)
+
+    # 1️⃣ Exact
+    if kw_tokens and kw_tokens.issubset(tokens):
         return "exact"
 
-    # 2️⃣ Alias match
-    for alias in KEYWORD_ALIASES.get(keyword.lower(), []):
+    # 2️⃣ Alias
+    for alias in KEYWORD_ALIASES.get(kw, []):
         if _tokenize(alias).issubset(tokens):
             return "alias"
 
-    # 3️⃣ Contextual signal match
-    for phrase in KEYWORD_CONTEXT_SIGNALS.get(keyword.lower(), []):
+    # 3️⃣ Context
+    for phrase in KEYWORD_CONTEXT_SIGNALS.get(kw, []):
         if _tokenize(phrase).issubset(tokens):
             return "context"
+
+    # 4️⃣ Composite (SAFE)
+    if _match_composite(kw, tokens):
+        return "composite"
 
     return None
 
 
-# -----------------------
-# Backward-compatible scorer
-# -----------------------
+# =========================================================
+# Simple scorer (debug only)
+# =========================================================
 
 def score(keywords: list[str], resume_text: str) -> dict:
     tokens = _tokenize(resume_text)
-
     matched = [kw for kw in keywords if _match_keyword(kw, tokens)]
     missing = list(set(keywords) - set(matched))
 
-    score_pct = int((len(matched) / max(len(keywords), 1)) * 100)
-
     return {
-        "score": score_pct,
+        "score": int((len(matched) / max(len(keywords), 1)) * 100),
         "matched_keywords": matched,
         "missing_keywords": missing,
-        "verdict": (
-            "Excellent ATS match"
-            if score_pct >= 80
-            else "Moderate match"
-            if score_pct >= 60
-            else "Weak match"
-        ),
     }
 
 
-# -----------------------
-# Recruiter-grade ATS scorer
-# -----------------------
+# =========================================================
+# Recruiter-grade ATS scorer (PRODUCTION)
+# =========================================================
 
 def score_detailed(
     jd_keywords: Dict[str, List[str]],
     resume_text: str,
+    inferred_skills: Optional[List[Dict]] = None,
 ) -> dict:
-    """
-    jd_keywords = {
-        "required_skills": [...],
-        "optional_skills": [...],
-        "tools": [...]
-    }
-    """
     tokens = _tokenize(resume_text)
+
+    # 🔥 Evidence-gated inference (NO JD mutation)
+    if inferred_skills:
+        for s in inferred_skills:
+            if s.get("confidence", 0) >= 0.8:
+                tokens.update(_tokenize(s["skill"]))
 
     weights = {
         "required_skills": 3.0,
@@ -131,34 +182,34 @@ def score_detailed(
     }
 
     total_possible = sum(
-        len(jd_keywords.get(k, [])) * w for k, w in weights.items()
+        len(jd_keywords.get(cat, [])) * w
+        for cat, w in weights.items()
     ) or 1.0
 
     score = 0.0
-    matched = {
-        "required_skills": [],
-        "optional_skills": [],
-        "tools": [],
-    }
+    matched = {k: [] for k in weights}
     missing_required = []
 
     for category, weight in weights.items():
         for kw in jd_keywords.get(category, []):
-            if _match_keyword(kw, tokens):
+            match_type = _match_keyword(kw, tokens)
+
+            if match_type:
                 matched[category].append(kw)
                 score += weight
+
             elif category == "required_skills":
-                missing_required.append(kw)
+                # 🚫 Do not hard-block composite / architecture skills
+                if kw.lower() not in COMPOSITE_SKILLS:
+                    missing_required.append(kw)
 
     percentage = int((score / total_possible) * 100)
 
-    # Required-skill floor (real ATS behavior)
+    # ATS floor logic (realistic)
     required_total = len(jd_keywords.get("required_skills", []))
-    required_coverage = (
-        len(matched["required_skills"]) / max(required_total, 1)
-    )
+    required_coverage = len(matched["required_skills"]) / max(required_total, 1)
 
-    if required_coverage < 0.5:
+    if required_coverage < 0.4:
         percentage = min(percentage, 45)
 
     return {
@@ -179,9 +230,9 @@ def score_detailed(
     }
 
 
-# -----------------------
-# Bullet → Keyword Attribution (Improved)
-# -----------------------
+# =========================================================
+# Bullet → Keyword attribution
+# =========================================================
 
 def attribute_keywords_to_bullets(
     jd_keywords: Dict[str, List[str]],
@@ -207,21 +258,12 @@ def attribute_keywords_to_bullets(
                 if match_type:
                     matches.append({
                         "keyword": kw,
-                        "match_type": match_type,  # exact | alias | context
+                        "match_type": match_type,
                     })
 
             bullets.append({
                 "text": bullet,
                 "matched_keywords": matches,
-                "confidence_score": round(
-                    sum(
-                        1.0 if m["match_type"] == "exact"
-                        else 0.7 if m["match_type"] == "alias"
-                        else 0.4
-                        for m in matches
-                    ),
-                    2,
-                ),
             })
 
         attributed.append({
@@ -232,10 +274,9 @@ def attribute_keywords_to_bullets(
     return attributed
 
 
-
-# -----------------------
+# =========================================================
 # Risk model
-# -----------------------
+# =========================================================
 
 def ats_risk(score: int) -> str:
     if score < 50:

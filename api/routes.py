@@ -26,6 +26,17 @@ from agents.ats_scorer import (
 )
 
 from core.cache import get_cached_jd, set_cached_jd
+from agents.keyword_confidence import keyword_confidence
+from agents.resume_risk import resume_risk_flags
+from agents.jd_fit import classify_jd_fit
+from agents.skill_inference import infer_skills_from_resume
+from agents.role_confidence import tune_confidence_by_role
+from agents.role_detector import detect_role
+from agents.role_rules import ROLE_CONFIDENCE_THRESHOLDS
+from agents.rewrite_validator import validate_rewrite
+from agents.jd_normalizer import normalize_jd_keywords
+
+
 
 router = APIRouter()
 
@@ -169,40 +180,121 @@ def job_status(job_id: str):
         )
 
     return job
-
-
-# ------------------------
-# ATS Compare Endpoint
-# ------------------------
-
 @router.post("/ats/compare")
 def compare_ats(
     job_description: str = Form(None),
     jd_file: UploadFile | None = File(None),
     resume: UploadFile = File(...),
 ):
+    # -----------------------------
+    # 1️⃣ Input validation
+    # -----------------------------
     if not job_description and not jd_file:
-        raise HTTPException(400, "JD text or file required")
+        raise HTTPException(
+            status_code=400,
+            detail="JD text or JD file is required",
+        )
 
+    # -----------------------------
+    # 2️⃣ Text extraction
+    # -----------------------------
     jd_text = extract_text(jd_file) if jd_file else job_description
     resume_text = extract_text(resume)
 
-    # ---- JD analysis with Redis cache ----
-    jd_data = get_cached_jd(jd_text)
-    if not jd_data:
-        jd_data = analyze_jd(jd_text)
-        set_cached_jd(jd_text, jd_data)
+    if not jd_text.strip() or not resume_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to extract text from JD or resume",
+        )
 
-    jd_keywords = {
-        "required_skills": jd_data["required_skills"],
-        "optional_skills": jd_data["optional_skills"],
-        "tools": jd_data["tools"],
+    # -----------------------------
+    # 3️⃣ JD analysis (LLM – structured)
+    # -----------------------------
+    jd_data = analyze_jd(jd_text)
+
+    raw_jd_keywords = {
+        "required_skills": jd_data.get("required_skills", []),
+        "optional_skills": jd_data.get("optional_skills", []),
+        "tools": jd_data.get("tools", []),
     }
 
-    before = score_detailed(jd_keywords, resume_text)
+    # ✅ Canonical JD normalization (FIX 2)
+    jd_keywords_all = normalize_jd_keywords(raw_jd_keywords)
 
-    # ---- Rewrite resume ----
-    rewritten = rewrite(jd_text, resume_text)
+    # -----------------------------
+    # 🧠 4️⃣ Role auto-detection
+    # -----------------------------
+    role_info = detect_role(jd_text, resume_text)
+    role = role_info["role"]
+
+    # -----------------------------
+    # 5️⃣ Keyword confidence (resume vs JD)
+    # -----------------------------
+    confidence = keyword_confidence(
+        jd_keywords_all,
+        resume_text,
+    )
+
+    # -----------------------------
+    # 6️⃣ Deterministic safe skill inference
+    # -----------------------------
+    inferred_skills = infer_skills_from_resume(
+        resume_text=resume_text,
+        explicit_skills=(
+            jd_keywords_all["required_skills"]
+            + jd_keywords_all["optional_skills"]
+            + jd_keywords_all["tools"]
+        ),
+    )
+
+    # 🎯 Role-aware confidence tuning
+    inferred_skills = tune_confidence_by_role(
+        inferred_skills,
+        role=role,
+    )
+
+    # -----------------------------
+    # 7️⃣ SAFE keywords allowed for rewrite
+    # -----------------------------
+    safe_keywords = {
+        "explicit": (
+            confidence["high"]["required_skills"]
+            + confidence["high"]["tools"]
+        ),
+        "derived": [
+            {
+                "skill": s["skill"],
+                "confidence": s["confidence"],
+                "evidence": s.get("evidence", []),
+            }
+            for s in inferred_skills
+            if s["confidence"] >= 0.8
+        ],
+    }
+
+    # -----------------------------
+    # 8️⃣ ATS score BEFORE rewrite
+    # -----------------------------
+    before = score_detailed(
+        jd_keywords_all,
+        resume_text,
+        inferred_skills=inferred_skills,  # ✅ evidence-gated scoring
+    )
+
+    # -----------------------------
+    # 9️⃣ Rewrite resume (LLM – guarded)
+    # -----------------------------
+    rewritten = rewrite(
+        safe_keywords,
+        resume_text,
+    )
+
+    # 🔒 POST-LLM SELF-CHECK (ANTI-HALLUCINATION)
+    rewritten = validate_rewrite(
+        rewritten,
+        resume_text,
+        safe_keywords,
+    )
 
     rewritten_text = (
         rewritten.get("summary", "")
@@ -212,18 +304,55 @@ def compare_ats(
             for exp in rewritten.get("experience", [])
             for bullet in exp.get("bullets", [])
         )
+    ).strip()
+
+    # Fallback safety
+    if not rewritten_text:
+        rewritten_text = resume_text
+
+    # -----------------------------
+    # 🔟 ATS score AFTER rewrite
+    # -----------------------------
+    after = score_detailed(
+        jd_keywords_all,
+        rewritten_text,
+        inferred_skills=inferred_skills,
     )
 
-    after = score_detailed(jd_keywords, rewritten_text)
+    # 🚨 ATS MONOTONICITY GUARD (MANDATORY)
+    if after["score"] < before["score"]:
+        after = before
+        rewritten = {
+            "summary": "",
+            "experience": [],
+            "skills": [],
+            "note": "Rewrite skipped to prevent ATS regression",
+        }
 
-    # 5️⃣ Keyword attribution (AFTER only – makes sense)
-    attribution = attribute_keywords_to_bullets(
-        jd_keywords,
+    # -----------------------------
+    # 1️⃣1️⃣ JD fit classification
+    # -----------------------------
+    jd_fit = classify_jd_fit(after)
+
+    # -----------------------------
+    # 1️⃣2️⃣ Resume risk flags
+    # -----------------------------
+    resume_risks = resume_risk_flags(
+        jd_keywords_all,
+        after,
+    )
+
+    # -----------------------------
+    # 1️⃣3️⃣ Keyword attribution (AFTER only)
+    # -----------------------------
+    keyword_attribution = attribute_keywords_to_bullets(
+        jd_keywords_all,
         rewritten.get("experience", []),
     )
 
-
-    # ---- Risk calculation ----
+    # -----------------------------
+    # 1️⃣4️⃣ ATS risk band
+    # -----------------------------
     def ats_risk(score: int) -> str:
         if score < 50:
             return "high"
@@ -236,18 +365,34 @@ def compare_ats(
         "after": ats_risk(after["score"]),
     }
 
-    # ---- Improvement ----
+    # -----------------------------
+    # 1️⃣5️⃣ Improvement analysis
+    # -----------------------------
+    before_keywords = set(
+        sum(before["matched_keywords"].values(), [])
+    )
+    after_keywords = set(
+        sum(after["matched_keywords"].values(), [])
+    )
+
     improvement = {
         "score_delta": after["score"] - before["score"],
-        "newly_added_keywords": list(
-            set(after["matched_keywords"]) - set(before["matched_keywords"])
-        ),
+        "newly_added_keywords": list(after_keywords - before_keywords),
     }
 
+    # -----------------------------
+    # ✅ Final response
+    # -----------------------------
     return {
+        "role_detection": role_info,
         "before": before,
         "after": after,
         "improvement": improvement,
         "risk": risk,
-        "keyword_attribution": attribution,
+        "keyword_attribution": keyword_attribution,
+        "keyword_confidence": confidence,
+        "resume_risks": resume_risks,
+        "jd_fit": jd_fit,
+        "inferred_skills": inferred_skills,  # 🔍 evidence trace
+        "rewritten_resume": rewritten,
     }
