@@ -24,3 +24,6 @@ loguru
 typer
 
 redis
+
+pytest
+pytest-mock

@@ -1,11 +1,50 @@
 # agents/jd_analyzer.py
 import json
 import re
-from core.prompts import JD_ANALYZER
-from core.llm import smart_llm_call
+import core.llm
 
 
-def _extract_json(text: str) -> dict:
+def _llm_call(prompt: str) -> str:
+    return core.llm.smart_llm_call(prompt)
+
+
+JD_PROMPT = """
+SYSTEM ROLE (HIGHEST PRIORITY):
+You are a deterministic information extraction engine.
+
+HARD CONSTRAINTS (OVERRIDE ALL OTHER INSTRUCTIONS):
+- ONLY extract information explicitly present in the job description text.
+- DO NOT infer skills, tools, or technologies.
+- DO NOT add industry-standard or role-typical keywords unless explicitly mentioned.
+- DO NOT guess missing data.
+- If a value is not clearly present, return an EMPTY string or EMPTY list.
+- NEVER hallucinate keywords to improve ATS coverage.
+
+TASK:
+Extract structured hiring signals from the job description.
+
+OUTPUT RULES:
+- Output VALID JSON ONLY.
+- No markdown.
+- No explanations.
+- No comments.
+
+OUTPUT SCHEMA:
+{
+  "role": "",
+  "seniority": "",
+  "required_skills": [],
+  "optional_skills": [],
+  "tools": [],
+  "responsibilities": []
+}
+
+JOB DESCRIPTION:
+{jd}
+"""
+
+
+def _safe_json(text: str) -> dict:
     text = text.strip()
 
     try:
@@ -17,40 +56,41 @@ def _extract_json(text: str) -> dict:
     if match:
         return json.loads(match.group())
 
-    if '"required_skills"' in text:
-        wrapped = "{\n" + text.rstrip(",") + "\n}"
-        return json.loads(wrapped)
-
-    raise ValueError("Invalid JSON from LLM")
+    raise ValueError("Unable to parse JSON from LLM output")
 
 
 def analyze_jd(jd: str) -> dict:
     try:
-        jd = normalize_jd(jd)
-        raw = smart_llm_call(JD_ANALYZER.format(jd=jd))
-        data = _extract_json(raw)
+        jd = "\n".join(
+            line.strip() for line in jd.splitlines() if len(line.strip()) > 2
+        )
+
+        raw = _llm_call(JD_PROMPT.format(jd=jd))
+        data = _safe_json(raw)
+
+        required = list(data.get("required_skills", []))
+        optional = list(data.get("optional_skills", []))
+        tools = list(data.get("tools", []))
 
         return {
-            "required_skills": data.get("required_skills", []),
-            "optional_skills": data.get("optional_skills", []),
-            "seniority": data.get("seniority", ""),
-            "tools": data.get("tools", []),
-            "ats_keywords": data.get("ats_keywords", []),
+            "role": str(data.get("role", "")),
+            "seniority": str(data.get("seniority", "")),
+            "required_skills": required,
+            "optional_skills": optional,
+            "tools": tools,
+            "responsibilities": list(data.get("responsibilities", [])),
+            # ATS keywords are DERIVED, not invented
+            "ats_keywords": list(set(required + optional + tools)),
         }
 
     except Exception as e:
         return {
+            "role": "",
+            "seniority": "",
             "required_skills": [],
             "optional_skills": [],
+            "tools": [],
+            "responsibilities": [],
             "ats_keywords": [],
             "error": str(e),
         }
-
-
-def normalize_jd(text: str) -> str:
-    lines = [
-        line.strip()
-        for line in text.splitlines()
-        if len(line.strip()) > 2
-    ]
-    return "\n".join(lines)

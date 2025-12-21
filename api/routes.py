@@ -8,6 +8,8 @@ from fastapi import (
     HTTPException,
 )
 
+import logging
+
 from api.files import extract_text
 from api.jobs import (
     create_job,
@@ -15,9 +17,15 @@ from api.jobs import (
     update_job,
     fail_job,
 )
-import logging
-from core.logging import request_id_ctx
 
+from agents.jd_analyzer import analyze_jd
+from agents.resume_rewriter import rewrite
+from agents.ats_scorer import (
+    score_detailed,
+    attribute_keywords_to_bullets,
+)
+
+from core.cache import get_cached_jd, set_cached_jd
 
 router = APIRouter()
 
@@ -40,8 +48,6 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str):
     logger.info(f"Processing job {job_id}")
 
     try:
-        from agents.jd_analyzer import analyze_jd
-        from agents.resume_rewriter import rewrite
         from agents.ats_scorer import score
         from agents.recruiter_persona import tune
 
@@ -61,7 +67,6 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str):
         fail_job(job_id, str(e))
 
 
-
 def process_resume_files_job(
     job_id: str,
     jd_text: str,
@@ -72,25 +77,17 @@ def process_resume_files_job(
 
 
 # ------------------------
-# Primary Endpoint (JD text + resume text/file)
+# Primary Endpoint
 # ------------------------
 
 @router.post("/tailor")
 def tailor(
     background_tasks: BackgroundTasks,
-
-    # JD inputs (exactly one required)
     job_description_text: str | None = Form(None),
     job_description_file: UploadFile | None = File(None),
-
-    # Resume input (file only, required)
     resume_file: UploadFile = File(...),
-
     recruiter_persona: str = Form("general"),
 ):
-    # ------------------------
-    # Validate JD input
-    # ------------------------
     if not job_description_text and not job_description_file:
         raise HTTPException(
             status_code=400,
@@ -103,34 +100,14 @@ def tailor(
             detail="Provide only one of job_description_text or job_description_file",
         )
 
-    # ------------------------
-    # Extract JD text
-    # ------------------------
-    if job_description_file:
-        try:
-            jd_text = extract_text(job_description_file)
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"JD file processing failed: {str(e)}",
-            )
-    else:
-        jd_text = job_description_text
+    jd_text = (
+        extract_text(job_description_file)
+        if job_description_file
+        else job_description_text
+    )
 
-    # ------------------------
-    # Extract Resume text (file only)
-    # ------------------------
-    try:
-        resume_text = extract_text(resume_file)
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Resume file processing failed: {str(e)}",
-        )
+    resume_text = extract_text(resume_file)
 
-    # ------------------------
-    # Create async job
-    # ------------------------
     job_id = create_job()
 
     background_tasks.add_task(
@@ -147,7 +124,6 @@ def tailor(
     }
 
 
-
 # ------------------------
 # File-Only Convenience Endpoint
 # ------------------------
@@ -159,14 +135,8 @@ def tailor_files(
     resume: UploadFile = File(...),
     recruiter_persona: str = Form("general"),
 ):
-    try:
-        jd_text = extract_text(job_description)
-        resume_text = extract_text(resume)
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File processing failed: {str(e)}",
-        )
+    jd_text = extract_text(job_description)
+    resume_text = extract_text(resume)
 
     job_id = create_job()
 
@@ -199,3 +169,85 @@ def job_status(job_id: str):
         )
 
     return job
+
+
+# ------------------------
+# ATS Compare Endpoint
+# ------------------------
+
+@router.post("/ats/compare")
+def compare_ats(
+    job_description: str = Form(None),
+    jd_file: UploadFile | None = File(None),
+    resume: UploadFile = File(...),
+):
+    if not job_description and not jd_file:
+        raise HTTPException(400, "JD text or file required")
+
+    jd_text = extract_text(jd_file) if jd_file else job_description
+    resume_text = extract_text(resume)
+
+    # ---- JD analysis with Redis cache ----
+    jd_data = get_cached_jd(jd_text)
+    if not jd_data:
+        jd_data = analyze_jd(jd_text)
+        set_cached_jd(jd_text, jd_data)
+
+    jd_keywords = {
+        "required_skills": jd_data["required_skills"],
+        "optional_skills": jd_data["optional_skills"],
+        "tools": jd_data["tools"],
+    }
+
+    before = score_detailed(jd_keywords, resume_text)
+
+    # ---- Rewrite resume ----
+    rewritten = rewrite(jd_text, resume_text)
+
+    rewritten_text = (
+        rewritten.get("summary", "")
+        + "\n"
+        + "\n".join(
+            bullet
+            for exp in rewritten.get("experience", [])
+            for bullet in exp.get("bullets", [])
+        )
+    )
+
+    after = score_detailed(jd_keywords, rewritten_text)
+
+    # 5️⃣ Keyword attribution (AFTER only – makes sense)
+    attribution = attribute_keywords_to_bullets(
+        jd_keywords,
+        rewritten.get("experience", []),
+    )
+
+
+    # ---- Risk calculation ----
+    def ats_risk(score: int) -> str:
+        if score < 50:
+            return "high"
+        if score < 70:
+            return "medium"
+        return "low"
+
+    risk = {
+        "before": ats_risk(before["score"]),
+        "after": ats_risk(after["score"]),
+    }
+
+    # ---- Improvement ----
+    improvement = {
+        "score_delta": after["score"] - before["score"],
+        "newly_added_keywords": list(
+            set(after["matched_keywords"]) - set(before["matched_keywords"])
+        ),
+    }
+
+    return {
+        "before": before,
+        "after": after,
+        "improvement": improvement,
+        "risk": risk,
+        "keyword_attribution": attribution,
+    }
