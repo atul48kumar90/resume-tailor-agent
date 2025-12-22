@@ -46,6 +46,13 @@ from fastapi.responses import StreamingResponse
 from agents.exporters.zip_exporter import export_zip
 from agents.templates.recommender import recommend_templates
 from agents.templates.registry import TEMPLATES
+from fastapi.responses import FileResponse
+from agents.exporters.pdf_exporter import export_pdf
+from agents.exporters.docx_exporter import export_docx
+from agents.exporters.txt_exporter import export_txt
+from agents.exporters.zip_exporter import export_zip
+import tempfile
+
 
 
 
@@ -512,3 +519,37 @@ def recommend_resume_templates(role_info: dict):
         }
         for t in ids
     ]
+
+
+@router.get("/resume/{resume_id}/export")
+def export_resume(
+    resume_id: str,
+    format: str = "pdf",   # pdf | docx | txt | zip
+):
+    # 🔒 MUST be approved version
+    resume = get_approved_resume(resume_id)
+
+    if not resume:
+        raise HTTPException(404, "Resume not approved yet")
+
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+
+    if format == "pdf":
+        export_pdf(resume, tmp.name)
+        return FileResponse(tmp.name, filename="resume.pdf")
+
+    if format == "docx":
+        export_docx(resume, tmp.name)
+        return FileResponse(tmp.name, filename="resume.docx")
+
+    if format == "txt":
+        content = export_txt(resume)
+        with open(tmp.name, "w") as f:
+            f.write(content)
+        return FileResponse(tmp.name, filename="resume.txt")
+
+    if format == "zip":
+        export_zip(resume, tmp.name)
+        return FileResponse(tmp.name, filename="resume.zip")
+
+    raise HTTPException(400, "Invalid export format")

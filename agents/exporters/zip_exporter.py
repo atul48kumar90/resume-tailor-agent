@@ -1,30 +1,19 @@
-from io import BytesIO
 import zipfile
+import tempfile
+from .txt_exporter import export_txt
+from .docx_exporter import export_docx
+from .pdf_exporter import export_pdf
 
-from agents.exporters.txt_exporter import export_txt
-from agents.exporters.docx_exporter import export_docx
-from agents.templates.pdf_renderer import render_pdf
-from agents.resume_formatter import format_resume_sections
+def export_zip(resume: dict, zip_path: str):
+    with tempfile.TemporaryDirectory() as tmp:
+        txt = export_txt(resume)
+        docx_path = f"{tmp}/resume.docx"
+        pdf_path = f"{tmp}/resume.pdf"
 
+        export_docx(resume, docx_path)
+        export_pdf(resume, pdf_path)
 
-def export_zip(
-    rewritten_resume: dict,
-    template_id: str,
-) -> BytesIO:
-
-    buffer = BytesIO()
-    sections = format_resume_sections(rewritten_resume)
-
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
-        # PDF
-        pdf = render_pdf(sections, template_id)
-        z.writestr("resume.pdf", pdf.getvalue())
-
-        # DOCX
-        z.writestr("resume.docx", export_docx(rewritten_resume))
-
-        # TXT
-        z.writestr("resume.txt", export_txt(rewritten_resume))
-
-    buffer.seek(0)
-    return buffer
+        with zipfile.ZipFile(zip_path, "w") as z:
+            z.writestr("resume.txt", txt)
+            z.write(docx_path, "resume.docx")
+            z.write(pdf_path, "resume.pdf")
