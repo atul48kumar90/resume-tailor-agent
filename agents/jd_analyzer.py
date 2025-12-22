@@ -151,7 +151,12 @@ def analyze_jd(jd: str) -> dict:
         }
 
     except Exception as e:
-        # Hard fail-safe
+        # Log error with context
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"JD analysis failed: {e}", exc_info=True)
+        
+        # Hard fail-safe - return empty structure but log the error
         return {
             "role": "",
             "seniority": "",

@@ -216,9 +216,16 @@ def rewrite(
         return rewritten
 
     except Exception as e:
+        # Log error with context
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Resume rewrite failed: {e}", exc_info=True)
+        
+        # Return safe fallback with error info
         return {
             "summary": "",
             "experience": [],
             "skills": [],
             "error": str(e),
+            "note": "Rewrite failed, returning empty result",
         }

@@ -1,0 +1,24 @@
+Software Engineer - Backend
+
+We are looking for an experienced Software Engineer to join our backend team.
+
+Required Skills:
+- Java programming (5+ years)
+- Spring Boot framework
+- REST API design and development
+- Microservices architecture
+- PostgreSQL database
+- Docker and containerization
+
+Preferred Skills:
+- Kubernetes experience
+- Redis caching
+- Cloud platforms (AWS, GCP, or Azure)
+- CI/CD pipelines
+
+Responsibilities:
+- Design and develop scalable backend services
+- Build RESTful APIs
+- Optimize database performance
+- Work with microservices architecture
+- Collaborate with frontend and DevOps teams

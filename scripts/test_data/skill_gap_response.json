@@ -1,0 +1,345 @@
+{
+  "role_detection": {
+    "role": "fullstack",
+    "confidence": 0.46,
+    "signals": {
+      "backend": 6,
+      "infra": 6,
+      "frontend": 1
+    }
+  },
+  "before": {
+    "score": 55,
+    "risk": "medium",
+    "matched_keywords": {
+      "required_skills": [
+        "spring boot",
+        "postgresql",
+        "docker"
+      ],
+      "tools": [
+        "spring boot",
+        "postgresql",
+        "docker",
+        "kubernetes",
+        "redis"
+      ],
+      "optional_skills": [
+        "kubernetes",
+        "redis"
+      ]
+    },
+    "missing_required": [
+      "java programming",
+      "rest api design and development",
+      "microservices architecture"
+    ],
+    "coverage": {
+      "required": "3/6",
+      "tools": "5/8",
+      "optional": "2/4"
+    },
+    "warnings": [
+      "Missing critical required skills"
+    ]
+  },
+  "after": {
+    "score": 55,
+    "risk": "medium",
+    "matched_keywords": {
+      "required_skills": [
+        "spring boot",
+        "postgresql",
+        "docker"
+      ],
+      "tools": [
+        "spring boot",
+        "postgresql",
+        "docker",
+        "kubernetes",
+        "redis"
+      ],
+      "optional_skills": [
+        "kubernetes",
+        "redis"
+      ]
+    },
+    "missing_required": [
+      "java programming",
+      "rest api design and development",
+      "microservices architecture"
+    ],
+    "coverage": {
+      "required": "3/6",
+      "tools": "5/8",
+      "optional": "2/4"
+    },
+    "warnings": [
+      "Missing critical required skills"
+    ]
+  },
+  "improvement": {
+    "score_delta": 0,
+    "newly_added_keywords": []
+  },
+  "risk": {
+    "before": "medium",
+    "after": "medium"
+  },
+  "keyword_attribution": [],
+  "keyword_confidence": {
+    "high": {
+      "required_skills": [
+        "spring boot",
+        "postgresql",
+        "docker"
+      ],
+      "optional_skills": [
+        "kubernetes",
+        "redis"
+      ],
+      "tools": [
+        "spring boot",
+        "postgresql",
+        "docker",
+        "kubernetes",
+        "redis"
+      ]
+    },
+    "medium": {
+      "required_skills": [
+        "java programming",
+        "rest api design and development",
+        "microservices architecture"
+      ],
+      "optional_skills": [
+        "cloud platforms"
+      ],
+      "tools": []
+    },
+    "low": {
+      "required_skills": [],
+      "optional_skills": [
+        "ci/cd pipelines"
+      ],
+      "tools": [
+        "aws",
+        "gcp",
+        "azure"
+      ]
+    }
+  },
+  "resume_risks": {
+    "has_blockers": true,
+    "flags": [
+      {
+        "type": "missing_core_skills",
+        "severity": "high",
+        "details": {
+          "missing_skills": [
+            "java programming",
+            "rest api design and development",
+            "microservices architecture"
+          ],
+          "count": 3
+        },
+        "message": "Resume is missing required skills that are explicitly listed in the job description."
+      },
+      {
+        "type": "low_ats_score",
+        "severity": "medium",
+        "details": {
+          "score": 55
+        },
+        "message": "ATS score is below the recommended threshold and may result in automated rejection."
+      }
+    ]
+  },
+  "jd_fit": {
+    "fit": "weak",
+    "score": 55,
+    "missing_required_count": 3,
+    "explanation": "Resume is a weak fit for the job description due to low ATS coverage or multiple missing required skills."
+  },
+  "inferred_skills": [
+    {
+      "skill": "Java",
+      "confidence": 0.77,
+      "evidence": [
+        "spring boot"
+      ]
+    },
+    {
+      "skill": "HTTP",
+      "confidence": 0.95,
+      "evidence": [
+        "rest api",
+        "rest apis"
+      ]
+    },
+    {
+      "skill": "Distributed Systems",
+      "confidence": 0.72,
+      "evidence": [
+        "microservices",
+        "scalable"
+      ]
+    },
+    {
+      "skill": "Relational Databases",
+      "confidence": 0.8,
+      "evidence": [
+        "sql"
+      ]
+    },
+    {
+      "skill": "NoSQL Databases",
+      "confidence": 0.9,
+      "evidence": [
+        "redis"
+      ]
+    }
+  ],
+  "rewritten_resume": {
+    "summary": "",
+    "experience": [],
+    "skills": [],
+    "note": "Rewrite skipped to prevent ATS regression"
+  },
+  "visual_comparison": {
+    "summary": {
+      "changed": false,
+      "before": "",
+      "after": ""
+    },
+    "experience": [],
+    "skills": {
+      "changed": false,
+      "added": [],
+      "removed": [],
+      "before": [],
+      "after": [],
+      "before_count": 0,
+      "after_count": 0
+    },
+    "text_diff": {
+      "lines": [],
+      "added_count": 0,
+      "removed_count": 0,
+      "unchanged_count": 0
+    },
+    "statistics": {
+      "before_word_count": 0,
+      "after_word_count": 0,
+      "before_length": 0,
+      "after_length": 0
+    }
+  },
+  "skill_gap_analysis": {
+    "summary": {
+      "required_coverage": 50.0,
+      "optional_coverage": 50.0,
+      "tools_coverage": 62.5,
+      "total_required": 6,
+      "total_optional": 4,
+      "total_tools": 8,
+      "present_required": 3,
+      "present_optional": 2,
+      "present_tools": 5
+    },
+    "present_skills": {
+      "required_skills": [
+        "spring boot",
+        "postgresql",
+        "docker"
+      ],
+      "optional_skills": [
+        "kubernetes",
+        "redis"
+      ],
+      "tools": [
+        "spring boot",
+        "postgresql",
+        "docker",
+        "kubernetes",
+        "redis"
+      ]
+    },
+    "missing_skills": {
+      "required_skills": [
+        "java programming",
+        "rest api design and development",
+        "microservices architecture"
+      ],
+      "optional_skills": [
+        "cloud platforms",
+        "ci/cd pipelines"
+      ],
+      "tools": [
+        "aws",
+        "gcp",
+        "azure"
+      ]
+    },
+    "priority_skills": [
+      {
+        "skill": "java programming",
+        "priority": "high",
+        "frequency": 1,
+        "category": "required"
+      },
+      {
+        "skill": "rest api design and development",
+        "priority": "high",
+        "frequency": 1,
+        "category": "required"
+      },
+      {
+        "skill": "microservices architecture",
+        "priority": "high",
+        "frequency": 1,
+        "category": "required"
+      }
+    ],
+    "recommendations": [
+      {
+        "type": "critical",
+        "title": "Add Required Skills",
+        "message": "You're missing 3 required skills. These are essential for this role.",
+        "skills": [
+          "java programming",
+          "rest api design and development",
+          "microservices architecture"
+        ],
+        "action": "Consider highlighting related experience or taking courses to develop these skills."
+      },
+      {
+        "type": "warning",
+        "title": "Low Skill Match",
+        "message": "Only 50.0% of required skills are present in your resume.",
+        "action": "Consider tailoring your resume more closely to the job description or applying to roles that better match your current skill set."
+      },
+      {
+        "type": "info",
+        "title": "Add Technical Tools",
+        "message": "Consider adding experience with: aws, gcp, azure",
+        "skills": [
+          "aws",
+          "gcp",
+          "azure"
+        ],
+        "action": "If you have experience with similar tools, mention them explicitly."
+      },
+      {
+        "type": "quick_win",
+        "title": "Quick Wins",
+        "message": "These skills might be easy to add based on your existing experience:",
+        "skills": [
+          "ci/cd"
+        ],
+        "action": "Review your experience - you may already have these skills but haven't mentioned them."
+      }
+    ],
+    "gap_severity": "high"
+  }
+}

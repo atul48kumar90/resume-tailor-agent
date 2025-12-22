@@ -2,37 +2,14 @@ from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4
-
-
-
-def format_resume_text(rewritten: dict) -> str:
-    """
-    Converts rewritten resume JSON into clean human-readable text.
-    """
-    lines = []
-
-    if rewritten.get("summary"):
-        lines.append("SUMMARY")
-        lines.append(rewritten["summary"])
-        lines.append("")
-
-    for exp in rewritten.get("experience", []):
-        if exp.get("title"):
-            lines.append(exp["title"])
-        for bullet in exp.get("bullets", []):
-            lines.append(f"- {bullet}")
-        lines.append("")
-
-    if rewritten.get("skills"):
-        lines.append("SKILLS")
-        lines.append(", ".join(rewritten["skills"]))
-
-    return "\n".join(lines).strip()
+from agents.resume_formatter import format_resume_text
 
 
 def export_pdf(resume_text: str) -> BytesIO:
     """
     Generates a clean, ATS-safe PDF resume.
+    Note: This function takes resume_text (string), not resume dict.
+    For resume dict, use exporters/pdf_exporter.py
     """
     buffer = BytesIO()
 
@@ -57,5 +34,30 @@ def export_pdf(resume_text: str) -> BytesIO:
             story.append(Paragraph(line, normal))
 
     doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
+def export_docx(resume_text: str) -> BytesIO:
+    """
+    Exports resume text to DOCX format as BytesIO.
+    Note: This function takes resume_text (string), not resume dict.
+    For resume dict, use exporters/docx_exporter.py
+    """
+    from docx import Document
+    
+    doc = Document()
+    
+    for line in resume_text.split("\n"):
+        if line.strip():
+            if line.strip().upper() in ["SUMMARY", "SKILLS", "EXPERIENCE"]:
+                doc.add_heading(line.strip(), level=1)
+            elif line.strip().startswith("- "):
+                doc.add_paragraph(line.strip()[2:], style="List Bullet")
+            else:
+                doc.add_paragraph(line.strip())
+    
+    buffer = BytesIO()
+    doc.save(buffer)
     buffer.seek(0)
     return buffer

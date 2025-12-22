@@ -7,6 +7,7 @@ from fastapi import (
     BackgroundTasks,
     HTTPException,
 )
+from typing import List
 
 import logging
 
@@ -33,24 +34,15 @@ from agents.skill_inference import infer_skills_from_resume
 from agents.role_confidence import tune_confidence_by_role
 from agents.role_detector import detect_role
 from agents.role_rules import ROLE_CONFIDENCE_THRESHOLDS
-from agents.rewrite_validator import validate_rewrite
 from agents.jd_normalizer import normalize_jd_keywords
-from fastapi.responses import StreamingResponse
-from agents.resume_formatter import format_resume_text
-from agents.resume_exporter import export_docx
+from fastapi.responses import StreamingResponse, FileResponse
+from agents.resume_formatter import format_resume_text, format_resume_sections
 from agents.templates.registry import TEMPLATES
-from fastapi.responses import StreamingResponse
-from agents.resume_formatter import format_resume_sections
 from agents.templates.pdf_renderer import render_pdf
-from fastapi.responses import StreamingResponse
-from agents.exporters.zip_exporter import export_zip
 from agents.templates.recommender import recommend_templates
-from agents.templates.registry import TEMPLATES
-from fastapi.responses import FileResponse
-from agents.exporters.pdf_exporter import export_pdf
-from agents.exporters.docx_exporter import export_docx
 from agents.exporters.txt_exporter import export_txt
 from agents.exporters.zip_exporter import export_zip
+from agents.resume_versions import get_current_version
 import tempfile
 
 
@@ -65,7 +57,65 @@ router = APIRouter()
 
 @router.get("/health")
 def health():
-    return {"status": "ok"}
+    """
+    Comprehensive health check endpoint.
+    Checks Redis connectivity and service status.
+    """
+    import time
+    from fastapi import Response
+    from api.jobs import redis_client as jobs_redis
+    from agents.resume_versions import redis_client as versions_redis
+    
+    health_status = {
+        "status": "ok",
+        "timestamp": time.time(),
+        "services": {}
+    }
+    
+    overall_healthy = True
+    
+    # Check Redis for jobs
+    try:
+        if jobs_redis:
+            jobs_redis.ping()
+            health_status["services"]["redis_jobs"] = "healthy"
+        else:
+            health_status["services"]["redis_jobs"] = "unavailable"
+            overall_healthy = False
+    except Exception as e:
+        health_status["services"]["redis_jobs"] = f"unhealthy: {str(e)}"
+        overall_healthy = False
+    
+    # Check Redis for versions
+    try:
+        if versions_redis:
+            versions_redis.ping()
+            health_status["services"]["redis_versions"] = "healthy"
+        else:
+            health_status["services"]["redis_versions"] = "unavailable"
+            overall_healthy = False
+    except Exception as e:
+        health_status["services"]["redis_versions"] = f"unhealthy: {str(e)}"
+        overall_healthy = False
+    
+    # Check LLM availability (basic check)
+    try:
+        from core.llm import fast_llm_call
+        # Just check if the function exists and can be called
+        health_status["services"]["llm"] = "available"
+    except Exception as e:
+        health_status["services"]["llm"] = f"unavailable: {str(e)}"
+        overall_healthy = False
+    
+    if not overall_healthy:
+        health_status["status"] = "degraded"
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            content=health_status,
+            status_code=503
+        )
+    
+    return health_status
 
 
 # ------------------------
@@ -129,13 +179,27 @@ def tailor(
             detail="Provide only one of job_description_text or job_description_file",
         )
 
-    jd_text = (
-        extract_text(job_description_file)
-        if job_description_file
-        else job_description_text
-    )
+    try:
+        jd_text = (
+            extract_text(job_description_file)
+            if job_description_file
+            else job_description_text
+        )
 
-    resume_text = extract_text(resume_file)
+        resume_text = extract_text(resume_file)
+    except ValueError as e:
+        # File size or type error
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Text extraction failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to extract text from files"
+        )
 
     job_id = create_job()
 
@@ -204,6 +268,17 @@ def compare_ats(
     jd_file: UploadFile | None = File(None),
     resume: UploadFile = File(...),
 ):
+    """
+    Compare ATS scores before and after resume rewrite.
+    
+    Args:
+        job_description: Job description text (optional if jd_file provided)
+        jd_file: Job description file (optional if job_description provided)
+        resume: Resume file (required)
+    
+    Returns:
+        Comparison results with before/after scores and analysis
+    """
     # -----------------------------
     # 1️⃣ Input validation
     # -----------------------------
@@ -214,15 +289,37 @@ def compare_ats(
         )
 
     # -----------------------------
-    # 2️⃣ Text extraction
+    # 2️⃣ Text extraction with file size validation
     # -----------------------------
-    jd_text = extract_text(jd_file) if jd_file else job_description
-    resume_text = extract_text(resume)
-
-    if not jd_text.strip() or not resume_text.strip():
+    try:
+        jd_text = extract_text(jd_file) if jd_file else job_description
+        resume_text = extract_text(resume)
+    except ValueError as e:
+        # File size or type error
         raise HTTPException(
             status_code=400,
-            detail="Failed to extract text from JD or resume",
+            detail=str(e)
+        )
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Text extraction failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to extract text from files"
+        )
+
+    if not jd_text or not jd_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Job description is empty or could not be extracted. "
+                   "Please ensure your JD file contains readable text or provide JD text directly."
+        )
+    
+    if not resume_text or not resume_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Resume is empty or could not be extracted. "
+                   "Please ensure your resume file is a valid PDF, DOCX, or TXT file with readable content."
         )
 
     # -----------------------------
@@ -302,17 +399,28 @@ def compare_ats(
     # -----------------------------
     # 9️⃣ Rewrite resume (LLM – guarded)
     # -----------------------------
-    rewritten = rewrite(
-        safe_keywords,
-        resume_text,
-    )
+    try:
+        rewritten = rewrite(
+            safe_keywords,
+            resume_text,
+        )
+        
+        # Check if rewrite failed
+        if rewritten.get("error"):
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Resume rewrite had errors: {rewritten.get('error')}")
+            # Continue with partial results if available
+        
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Resume rewrite failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to rewrite resume. Please try again or contact support if the issue persists."
+        )
 
-    # 🔒 POST-LLM SELF-CHECK (ANTI-HALLUCINATION)
-    rewritten = validate_rewrite(
-        rewritten,
-        resume_text,
-        safe_keywords,
-    )
+    # Note: validate_rewrite is already called inside rewrite() function
+    # No need to call it again here
 
     rewritten_text = (
         rewritten.get("summary", "")
@@ -326,6 +434,8 @@ def compare_ats(
 
     # Fallback safety
     if not rewritten_text:
+        logger = logging.getLogger(__name__)
+        logger.warning("Rewritten text is empty, using original resume")
         rewritten_text = resume_text
 
     # -----------------------------
@@ -399,6 +509,40 @@ def compare_ats(
     }
 
     # -----------------------------
+    # 1️⃣6️⃣ Skill gap analysis (NEW)
+    # -----------------------------
+    from agents.skill_gap_analyzer import analyze_skill_gap
+    
+    skill_gap = analyze_skill_gap(
+        jd_keywords_all,
+        resume_text,
+        inferred_skills
+    )
+    
+    # -----------------------------
+    # 1️⃣7️⃣ Visual comparison (NEW)
+    # -----------------------------
+    from agents.diff_viewer import diff_resume_structured
+    from agents.resume_formatter import format_resume_text
+    
+    # Create structured resume objects for comparison
+    before_resume_structured = {
+        "summary": "",  # Original resume doesn't have structured format
+        "experience": [],  # Would need parsing, but for now use text
+        "skills": []
+    }
+    
+    # For comparison, we'll use the formatted text versions
+    before_resume_text = resume_text
+    after_resume_text = format_resume_text(rewritten)
+    
+    # Create visual diff
+    visual_diff = diff_resume_structured(
+        {"summary": "", "experience": [], "skills": []},  # Simplified before
+        rewritten  # Structured after
+    )
+
+    # -----------------------------
     # ✅ Final response
     # -----------------------------
     return {
@@ -413,13 +557,509 @@ def compare_ats(
         "jd_fit": jd_fit,
         "inferred_skills": inferred_skills,  # 🔍 evidence trace
         "rewritten_resume": rewritten,
+        "visual_comparison": visual_diff,  # 🆕 Visual before/after diff
+        "skill_gap_analysis": skill_gap,  # 🆕 Skill gap analysis
     }
+
+@router.post("/ats/batch")
+def batch_process_jds(
+    resume: UploadFile = File(...),
+    jd_files: List[UploadFile] = File(...),
+    resume_id: str = Form(None),
+):
+    """
+    Process resume against multiple job descriptions at once.
+    
+    Args:
+        resume: Resume file
+        jd_files: List of job description files (up to 20)
+        resume_id: Optional resume ID for tracking
+    
+    Returns:
+        Batch processing results with scores and recommendations for each JD
+    """
+    from agents.batch_processor import process_batch_jds
+    from api.schemas import BatchJDRequest
+    
+    # Validate number of JDs
+    if len(jd_files) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 20 job descriptions allowed per batch"
+        )
+    
+    if len(jd_files) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one job description file is required"
+        )
+    
+    # Extract resume text
+    try:
+        resume_text = extract_text(resume)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to extract resume text: {str(e)}"
+        )
+    
+    # Extract JD texts
+    jd_list = []
+    for idx, jd_file in enumerate(jd_files):
+        try:
+            jd_text = extract_text(jd_file)
+            jd_id = jd_file.filename or f"jd_{idx}"
+            jd_list.append({
+                "jd_id": jd_id,
+                "jd_text": jd_text,
+                "title": jd_file.filename or f"Job {idx + 1}"
+            })
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to extract JD {idx}: {e}")
+            jd_list.append({
+                "jd_id": f"jd_{idx}",
+                "jd_text": "",
+                "title": jd_file.filename or f"Job {idx + 1}",
+                "error": str(e)
+            })
+    
+    # Process batch
+    try:
+        results = process_batch_jds(
+            resume_text=resume_text,
+            jd_list=jd_list,
+            resume_id=resume_id
+        )
+        return results
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Batch processing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Batch processing failed: {str(e)}"
+        )
+
+
+@router.post("/ats/batch/text")
+def batch_process_jds_text(
+    resume: UploadFile = File(...),
+    jd_texts: List[str] = Form(...),
+    jd_titles: List[str] = Form(None),
+    resume_id: str = Form(None),
+):
+    """
+    Process resume against multiple job descriptions (text input).
+    
+    Args:
+        resume: Resume file
+        jd_texts: List of job description texts
+        jd_titles: Optional list of job titles
+        resume_id: Optional resume ID for tracking
+    
+    Returns:
+        Batch processing results
+    """
+    from agents.batch_processor import process_batch_jds
+    
+    if len(jd_texts) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail="Maximum 20 job descriptions allowed per batch"
+        )
+    
+    if len(jd_texts) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one job description is required"
+        )
+    
+    # Extract resume text
+    try:
+        resume_text = extract_text(resume)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to extract resume text: {str(e)}"
+        )
+    
+    # Prepare JD list
+    jd_list = []
+    titles = jd_titles or []
+    
+    for idx, jd_text in enumerate(jd_texts):
+        jd_list.append({
+            "jd_id": f"jd_{idx}",
+            "jd_text": jd_text,
+            "title": titles[idx] if idx < len(titles) else f"Job {idx + 1}"
+        })
+    
+    # Process batch
+    try:
+        results = process_batch_jds(
+            resume_text=resume_text,
+            jd_list=jd_list,
+            resume_id=resume_id
+        )
+        return results
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Batch processing failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Batch processing failed: {str(e)}"
+        )
+
+
+@router.get("/ats/compare/{job_id}/skill-gap")
+def get_skill_gap_analysis(job_id: str):
+    """
+    Get skill gap analysis for a completed job.
+    
+    Args:
+        job_id: Job ID from /ats/compare endpoint
+    
+    Returns:
+        Skill gap analysis with missing skills and recommendations
+    """
+    job = get_job(job_id)
+    if not job or job.get("status") != "completed":
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found or not completed"
+        )
+    
+    result = job.get("result", {})
+    if "skill_gap_analysis" in result:
+        return result["skill_gap_analysis"]
+    
+    raise HTTPException(
+        status_code=404,
+        detail="Skill gap analysis not available for this job"
+    )
+
+
+@router.post("/resumes")
+def create_resume_entry(
+    title: str = Form(...),
+    tags: str = Form(None),  # Comma-separated
+    user_id: str = Form("default"),
+):
+    """
+    Create a new resume entry in the management system.
+    
+    Args:
+        title: Resume title/name
+        tags: Comma-separated tags
+        user_id: User identifier
+    
+    Returns:
+        Resume ID and metadata
+    """
+    from agents.resume_manager import create_resume
+    
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    
+    try:
+        resume_id = create_resume(
+            resume_data={},  # Will be populated when resume is uploaded
+            user_id=user_id,
+            title=title,
+            tags=tag_list
+        )
+        
+        return {
+            "resume_id": resume_id,
+            "title": title,
+            "tags": tag_list,
+            "message": "Resume entry created. Upload resume content to associate with this entry."
+        }
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to create resume entry: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create resume entry: {str(e)}"
+        )
+
+
+@router.get("/resumes")
+def list_resume_entries(
+    user_id: str = "default",
+    tags: str = None,  # Comma-separated filter
+):
+    """List all resumes for a user."""
+    from agents.resume_manager import list_resumes
+    
+    tag_list = [t.strip() for t in tags.split(",")] if tags else None
+    
+    try:
+        resumes = list_resumes(user_id=user_id, tags=tag_list)
+        return {
+            "count": len(resumes),
+            "resumes": resumes
+        }
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to list resumes: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list resumes: {str(e)}"
+        )
+
+
+@router.get("/resumes/{resume_id}")
+def get_resume_entry(resume_id: str):
+    """Get resume metadata and associated applications."""
+    from agents.resume_manager import get_resume, list_applications
+    
+    resume = get_resume(resume_id)
+    if not resume:
+        raise HTTPException(
+            status_code=404,
+            detail="Resume not found"
+        )
+    
+    applications = list_applications(resume_id)
+    
+    return {
+        **resume,
+        "applications": applications
+    }
+
+
+@router.post("/resumes/{resume_id}/applications")
+def create_application_entry(
+    resume_id: str,
+    jd_file: UploadFile = File(...),
+    jd_title: str = Form(None),
+    company: str = Form(None),
+    status: str = Form("applied"),
+    ats_score: int = Form(None),
+    notes: str = Form(None),
+):
+    """
+    Create an application record for a resume.
+    
+    Args:
+        resume_id: Resume ID
+        jd_file: Job description file
+        jd_title: Job title
+        company: Company name
+        status: Application status
+        ats_score: ATS score (optional)
+        notes: Optional notes
+    
+    Returns:
+        Application ID
+    """
+    from agents.resume_manager import create_application, get_resume
+    
+    # Verify resume exists
+    resume = get_resume(resume_id)
+    if not resume:
+        raise HTTPException(
+            status_code=404,
+            detail="Resume not found"
+        )
+    
+    # Extract JD text
+    try:
+        jd_text = extract_text(jd_file)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to extract JD text: {str(e)}"
+        )
+    
+    try:
+        application_id = create_application(
+            resume_id=resume_id,
+            jd_text=jd_text,
+            jd_title=jd_title,
+            company=company,
+            status=status,
+            ats_score=ats_score,
+            notes=notes
+        )
+        
+        return {
+            "application_id": application_id,
+            "resume_id": resume_id,
+            "message": "Application created successfully"
+        }
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to create application: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create application: {str(e)}"
+        )
+
+
+@router.patch("/applications/{application_id}")
+def update_application(
+    application_id: str,
+    status: str = Form(None),
+    notes: str = Form(None),
+):
+    """Update application status."""
+    from agents.resume_manager import update_application_status
+    
+    if status not in ["applied", "interview", "rejected", "offer", "withdrawn"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid status. Must be: applied, interview, rejected, offer, withdrawn"
+        )
+    
+    try:
+        update_application_status(application_id, status, notes)
+        return {"message": "Application updated successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to update application: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update application: {str(e)}"
+        )
+
+
+@router.get("/dashboard")
+def get_dashboard(user_id: str = "default"):
+    """Get dashboard statistics and overview."""
+    from agents.resume_manager import get_dashboard_stats
+    
+    try:
+        stats = get_dashboard_stats(user_id)
+        return stats
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to get dashboard: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get dashboard: {str(e)}"
+        )
+
+
+@router.get("/ats/compare/{job_id}/visual")
+def get_visual_comparison(job_id: str):
+    """
+    Get visual before/after comparison for a completed job.
+    
+    Args:
+        job_id: Job ID from /ats/compare endpoint
+    
+    Returns:
+        Visual diff with structured changes
+    """
+    job = get_job(job_id)
+    if not job or job.get("status") != "completed":
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found or not completed"
+        )
+    
+    result = job.get("result", {})
+    if "visual_comparison" in result:
+        return result["visual_comparison"]
+    
+    # If visual comparison not stored, generate it
+    from agents.diff_viewer import diff_resume_structured
+    rewritten = result.get("rewritten_resume", {})
+    before_resume = result.get("original_resume", {})
+    
+    visual_diff = diff_resume_structured(before_resume, rewritten)
+    return visual_diff
+
+
+@router.post("/ats/validate-format")
+def validate_resume_format(
+    resume_file: UploadFile = File(...),
+):
+    """
+    Validate if a resume file is ATS-friendly.
+    
+    Args:
+        resume_file: Resume file to validate (PDF or DOCX)
+    
+    Returns:
+        Validation results with issues, warnings, and recommendations
+    """
+    from agents.ats_format_validator import validate_ats_format
+    
+    filename = resume_file.filename.lower()
+    
+    if filename.endswith(".pdf"):
+        file_type = "pdf"
+    elif filename.endswith(".docx"):
+        file_type = "docx"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and DOCX files can be validated for ATS format"
+        )
+    
+    try:
+        # Save file temporarily for validation
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_type}") as tmp_file:
+            content = resume_file.file.read()
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+        
+        try:
+            result = validate_ats_format(file_path=tmp_path, file_type=file_type)
+            return result
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+    
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Format validation failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to validate file format: {str(e)}"
+        )
+
 
 @router.post("/ats/download")
 def download_resume(
-    rewritten_resume: dict,
+    rewritten_resume: dict,  # Will validate with Pydantic if needed
     format: str = "docx",  # docx | txt | pdf
 ):
+    """
+    Download rewritten resume in specified format.
+    
+    Args:
+        rewritten_resume: Resume data dictionary with summary, experience, skills
+        format: Output format (docx, txt, or pdf)
+    
+    Returns:
+        StreamingResponse with the resume file
+    """
+    from api.schemas import RewrittenResumeRequest
+    
+    # Validate request body
+    try:
+        validated = RewrittenResumeRequest(**rewritten_resume)
+        rewritten_resume = validated.dict()
+    except Exception as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid resume data: {str(e)}"
+        )
+    
+    if format not in ["docx", "txt", "pdf"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid format: {format}. Supported: docx, txt, pdf"
+        )
     resume_text = format_resume_text(rewritten_resume)
 
     if format == "txt":
@@ -432,7 +1072,9 @@ def download_resume(
         )
 
     if format == "pdf":
-        buffer = export_pdf(resume_text)
+        # Use resume_exporter for BytesIO streaming
+        from agents.resume_exporter import export_pdf as export_pdf_stream
+        buffer = export_pdf_stream(resume_text)
         return StreamingResponse(
             buffer,
             media_type="application/pdf",
@@ -442,7 +1084,14 @@ def download_resume(
         )
 
     # default → DOCX
-    buffer = export_docx(resume_text)
+    # Use resume_exporter for BytesIO streaming
+    from agents.resume_exporter import export_docx as export_docx_stream
+    buffer = export_docx_stream(resume_text)
+    
+    # Optional: Validate format before returning
+    # Note: This would require saving to temp file, validating, then streaming
+    # For now, we'll skip validation on download to avoid performance impact
+    
     return StreamingResponse(
         buffer,
         media_type=(
@@ -510,6 +1159,27 @@ def download_zip(
 
 @router.post("/ats/templates/recommend")
 def recommend_resume_templates(role_info: dict):
+    """
+    Recommend resume templates based on role information.
+    
+    Args:
+        role_info: Dictionary with role, confidence, and signals
+    
+    Returns:
+        List of recommended template IDs and names
+    """
+    from api.schemas import RoleInfoRequest
+    
+    # Validate request body
+    try:
+        validated = RoleInfoRequest(**role_info)
+        role_info = validated.dict()
+    except Exception as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid role info: {str(e)}"
+        )
+    
     ids = recommend_templates(role_info)
 
     return [
@@ -519,6 +1189,21 @@ def recommend_resume_templates(role_info: dict):
         }
         for t in ids
     ]
+
+
+def get_approved_resume(resume_id: str) -> dict | None:
+    """
+    Retrieves an approved resume version by ID.
+    For now, returns the current version if it exists.
+    TODO: Implement proper approval workflow with Redis/database.
+    """
+    try:
+        version = get_current_version()
+        if version and version.get("resume"):
+            return version["resume"]
+        return None
+    except (IndexError, KeyError):
+        return None
 
 
 @router.get("/resume/{resume_id}/export")
@@ -535,10 +1220,14 @@ def export_resume(
     tmp = tempfile.NamedTemporaryFile(delete=False)
 
     if format == "pdf":
+        # Use exporters/pdf_exporter for file path writing
+        from agents.exporters.pdf_exporter import export_pdf
         export_pdf(resume, tmp.name)
         return FileResponse(tmp.name, filename="resume.pdf")
 
     if format == "docx":
+        # Use exporters/docx_exporter for file path writing
+        from agents.exporters.docx_exporter import export_docx
         export_docx(resume, tmp.name)
         return FileResponse(tmp.name, filename="resume.docx")
 

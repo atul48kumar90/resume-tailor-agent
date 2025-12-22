@@ -18,6 +18,7 @@ nltk
 
 python-docx
 pypdf
+PyPDF2
 
 rich
 loguru

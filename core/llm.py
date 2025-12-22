@@ -50,5 +50,5 @@ def fast_llm_call(prompt: str) -> str:
 def smart_llm_call(prompt: str) -> str:
     global _smart_llm
     if _smart_llm is None:
-        _smart_llm = LLMClient("gpt-5.2")
+        _smart_llm = LLMClient("gpt-4o")  # Fixed: Changed from "gpt-5.2" to "gpt-4o"
     return _smart_llm.invoke(prompt)

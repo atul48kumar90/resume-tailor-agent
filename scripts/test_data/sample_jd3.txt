@@ -1,0 +1,10 @@
+Full Stack Developer
+
+We need a Full Stack Developer with strong backend skills.
+
+Requirements:
+- Java or Python
+- REST API development
+- Database design
+- Frontend experience (React, Angular, or Vue)
+- Git version control
