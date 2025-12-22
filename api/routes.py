@@ -35,6 +35,17 @@ from agents.role_detector import detect_role
 from agents.role_rules import ROLE_CONFIDENCE_THRESHOLDS
 from agents.rewrite_validator import validate_rewrite
 from agents.jd_normalizer import normalize_jd_keywords
+from fastapi.responses import StreamingResponse
+from agents.resume_formatter import format_resume_text
+from agents.resume_exporter import export_docx
+from agents.templates.registry import TEMPLATES
+from fastapi.responses import StreamingResponse
+from agents.resume_formatter import format_resume_sections
+from agents.templates.pdf_renderer import render_pdf
+from fastapi.responses import StreamingResponse
+from agents.exporters.zip_exporter import export_zip
+from agents.templates.recommender import recommend_templates
+from agents.templates.registry import TEMPLATES
 
 
 
@@ -396,3 +407,108 @@ def compare_ats(
         "inferred_skills": inferred_skills,  # 🔍 evidence trace
         "rewritten_resume": rewritten,
     }
+
+@router.post("/ats/download")
+def download_resume(
+    rewritten_resume: dict,
+    format: str = "docx",  # docx | txt | pdf
+):
+    resume_text = format_resume_text(rewritten_resume)
+
+    if format == "txt":
+        return StreamingResponse(
+            iter([resume_text]),
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": "attachment; filename=resume.txt"
+            },
+        )
+
+    if format == "pdf":
+        buffer = export_pdf(resume_text)
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": "attachment; filename=resume.pdf"
+            },
+        )
+
+    # default → DOCX
+    buffer = export_docx(resume_text)
+    return StreamingResponse(
+        buffer,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        headers={
+            "Content-Disposition": "attachment; filename=resume.docx"
+        },
+    )
+
+
+@router.get("/ats/templates")
+def list_templates():
+    return [
+        {
+            "id": k,
+            "name": v["name"],
+        }
+        for k, v in TEMPLATES.items()
+    ]
+
+
+@router.post("/ats/download/pdf")
+def download_pdf(
+    rewritten_resume: dict,
+    template_id: str = "classic",
+):
+    sections = format_resume_sections(rewritten_resume)
+
+    buffer = render_pdf(
+        resume_sections=sections,
+        template_id=template_id,
+    )
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=resume_{template_id}.pdf"
+            )
+        },
+    )
+
+
+@router.post("/ats/download/zip")
+def download_zip(
+    rewritten_resume: dict,
+    template_id: str = "classic",
+):
+    buffer = export_zip(
+        rewritten_resume=rewritten_resume,
+        template_id=template_id,
+    )
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": (
+                "attachment; filename=resume_bundle.zip"
+            )
+        },
+    )
+
+@router.post("/ats/templates/recommend")
+def recommend_resume_templates(role_info: dict):
+    ids = recommend_templates(role_info)
+
+    return [
+        {
+            "id": t,
+            "name": TEMPLATES[t]["name"],
+        }
+        for t in ids
+    ]
