@@ -1,0 +1,14 @@
+# robots.txt for Resume Tailor Agent
+
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /results/
+Disallow: /dashboard/
+
+# Sitemap
+Sitemap: https://resumetailor.agent/sitemap.xml
+
+# Crawl-delay (optional, adjust as needed)
+Crawl-delay: 1
+

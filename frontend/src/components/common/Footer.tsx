@@ -23,9 +23,21 @@ const Footer: React.FC = () => {
           <div>
             <h4 className="text-white font-semibold mb-4">Support</h4>
             <ul className="space-y-2 text-sm">
-              <li>Documentation</li>
-              <li>API Reference</li>
-              <li>Contact</li>
+              <li>
+                <a href="/faq" className="hover:text-white transition-colors">
+                  FAQ
+                </a>
+              </li>
+              <li>
+                <a href="/docs" className="hover:text-white transition-colors">
+                  Documentation
+                </a>
+              </li>
+              <li>
+                <a href="mailto:support@resumetailor.agent" className="hover:text-white transition-colors">
+                  Contact
+                </a>
+              </li>
             </ul>
           </div>
         </div>

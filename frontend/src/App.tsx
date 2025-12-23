@@ -9,6 +9,7 @@ import ResultsPage from './pages/ResultsPage';
 import DashboardPage from './pages/DashboardPage';
 import BatchPage from './pages/BatchPage';
 import TemplatesPage from './pages/TemplatesPage';
+import FAQPage from './pages/FAQPage';
 
 // Components
 import Header from './components/common/Header';
@@ -40,6 +41,7 @@ function App() {
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/batch" element={<BatchPage />} />
               <Route path="/templates" element={<TemplatesPage />} />
+              <Route path="/faq" element={<FAQPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </main>

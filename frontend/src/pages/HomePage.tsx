@@ -1,9 +1,23 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
+import SEO from '../components/seo/SEO';
+import { generateSoftwareApplicationSchema } from '../utils/structuredData';
 
 const HomePage: React.FC = () => {
+  const structuredData = generateSoftwareApplicationSchema();
+  // Get Google Search Console verification code from environment variable
+  const googleSiteVerification = import.meta.env.VITE_GOOGLE_SITE_VERIFICATION;
+  
   return (
-    <div className="min-h-screen">
+    <>
+      <SEO
+        title="Resume Tailor Agent - AI-Powered Resume Optimization for ATS"
+        description="Optimize your resume for Applicant Tracking Systems (ATS) with AI-powered resume tailoring. Get higher ATS scores, skill gap analysis, and personalized resume improvements tailored to job descriptions."
+        keywords="resume optimization, ATS resume, resume tailor, job application, resume builder, ATS score, resume improvement, career tools, resume analyzer"
+        structuredData={structuredData}
+        googleSiteVerification={googleSiteVerification}
+      />
+      <div className="min-h-screen">
       {/* Hero Section */}
       <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white">
         <div className="max-w-7xl mx-auto px-4 py-20">
@@ -101,6 +115,7 @@ const HomePage: React.FC = () => {
         </div>
       </div>
     </div>
+    </>
   );
 };
 

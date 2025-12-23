@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import SEO from '../components/seo/SEO';
 import FileUpload from '../components/upload/FileUpload';
 import PersonaSelector from '../components/upload/PersonaSelector';
 import { tailorResume } from '../services/api';
@@ -57,7 +58,14 @@ const UploadPage: React.FC = () => {
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
+    <>
+      <SEO
+        title="Upload Resume - Resume Tailor Agent"
+        description="Upload your resume and job description to get an ATS-optimized resume. Our AI will analyze your resume and tailor it to match the job requirements."
+        keywords="upload resume, resume optimization, ATS resume, job application, resume builder"
+        url="/upload"
+      />
+      <div className="max-w-4xl mx-auto px-4 py-8">
       <div className="bg-white rounded-lg shadow-md p-8">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">
           Tailor Your Resume
@@ -164,6 +172,7 @@ const UploadPage: React.FC = () => {
         </form>
       </div>
     </div>
+    </>
   );
 };
 

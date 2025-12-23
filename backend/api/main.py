@@ -221,6 +221,28 @@ app.include_router(chat_router)
 
 # Serve static files and SPA (must be after router to not interfere with API routes)
 static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+public_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "frontend", "public")
+
+# Serve SEO files (robots.txt, sitemap.xml) from public directory
+@app.get("/robots.txt")
+async def robots_txt():
+    """Serve robots.txt for SEO"""
+    robots_path = os.path.join(public_dir, "robots.txt")
+    if os.path.exists(robots_path):
+        return FileResponse(robots_path, media_type="text/plain")
+    # Return default robots.txt if file doesn't exist
+    from fastapi.responses import Response
+    return Response(content="User-agent: *\nAllow: /", media_type="text/plain")
+
+@app.get("/sitemap.xml")
+async def sitemap_xml():
+    """Serve sitemap.xml for SEO"""
+    sitemap_path = os.path.join(public_dir, "sitemap.xml")
+    if os.path.exists(sitemap_path):
+        return FileResponse(sitemap_path, media_type="application/xml")
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail="Sitemap not found")
+
 if os.path.exists(static_dir):
     # Mount static assets (JS, CSS, images)
     app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
@@ -232,9 +254,9 @@ if os.path.exists(static_dir):
         Serve React app for all non-API routes.
         This enables client-side routing in the React app.
         """
-        # Don't serve SPA for API routes, docs, health, or static files
+        # Don't serve SPA for API routes, docs, health, static files, or SEO files
         # Check for exact matches or paths starting with these prefixes
-        excluded = ["health", "docs", "openapi.json", "redoc", "api", "static", "assets"]
+        excluded = ["health", "docs", "openapi.json", "redoc", "api", "static", "assets", "robots.txt", "sitemap.xml", "chat"]
         if full_path in excluded or any(full_path.startswith(f"{prefix}/") for prefix in excluded):
             from fastapi import HTTPException
             raise HTTPException(status_code=404, detail="Not found")
