@@ -1,0 +1,43 @@
+fastapi
+uvicorn
+gunicorn
+
+python-dotenv
+python-multipart
+
+openai
+langchain
+langchain-openai
+pydantic
+tenacity
+tiktoken
+
+numpy
+scikit-learn
+nltk
+
+python-docx
+pypdf
+PyPDF2
+
+rich
+loguru
+typer
+
+redis
+redis[hiredis]
+rq
+
+# PostgreSQL
+sqlalchemy
+asyncpg
+psycopg2-binary  # Required for Alembic migrations (synchronous operations)
+alembic
+greenlet  # Required for SQLAlchemy async operations
+
+pytest
+pytest-mock
+
+# File security
+python-magic
+# python-magic-bin  # Windows support only - install separately on Windows if needed

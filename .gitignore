@@ -2,6 +2,12 @@
 .env*
 .env.local
 
+# Files that should not be committed
+not_commit.txt
+*.key
+*.pem
+secrets/
+
 # Python
 __pycache__/
 *.py[cod]
