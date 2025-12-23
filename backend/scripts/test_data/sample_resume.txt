@@ -1,0 +1,24 @@
+John Doe
+Software Engineer
+Email: john.doe@email.com | Phone: (555) 123-4567
+
+SUMMARY
+Experienced software engineer with 5+ years developing scalable backend systems using Java, Spring Boot, and microservices architecture. Strong expertise in REST APIs, database design, and cloud technologies.
+
+EXPERIENCE
+
+Senior Software Engineer | Tech Corp | 2020 - Present
+- Developed and maintained microservices using Spring Boot and Java
+- Designed REST APIs serving 1M+ requests per day
+- Implemented database solutions using PostgreSQL and Redis
+- Worked with Docker and Kubernetes for containerization
+- Collaborated with cross-functional teams using Agile methodologies
+
+Software Engineer | Startup Inc | 2018 - 2020
+- Built backend services using Java and Spring Framework
+- Created RESTful APIs for mobile and web applications
+- Optimized database queries improving performance by 40%
+- Participated in code reviews and technical design discussions
+
+SKILLS
+Java, Spring Boot, REST APIs, PostgreSQL, Redis, Docker, Kubernetes, Microservices, Git, Agile

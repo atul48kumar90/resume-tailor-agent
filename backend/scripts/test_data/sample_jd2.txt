@@ -1,0 +1,17 @@
+Senior Backend Engineer
+
+Join our team as a Senior Backend Engineer working on high-scale systems.
+
+Required:
+- Java (7+ years)
+- Spring Boot and Spring Framework
+- Microservices
+- REST APIs
+- SQL databases
+- Docker
+
+Nice to have:
+- Kubernetes
+- Redis
+- Message queues (Kafka, RabbitMQ)
+- AWS services
