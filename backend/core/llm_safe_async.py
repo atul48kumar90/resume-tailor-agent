@@ -3,7 +3,8 @@
 Async safe LLM wrapper with built-in anti-hallucination guardrails.
 """
 import logging
-from typing import Callable, Any, Optional, Dict, Awaitable
+import inspect
+from typing import Callable, Any, Optional, Dict, Awaitable, Union
 from core.llm_async import smart_llm_call_async, fast_llm_call_async
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 async def safe_llm_call_async(
     prompt: str,
-    validation_fn: Optional[Callable[[str], bool]] = None,
+    validation_fn: Optional[Union[Callable[[str], bool], Callable[[str], Awaitable[bool]]]] = None,
     fallback_value: Any = None,
     max_retries: int = 3,
     use_fast_model: bool = False,
@@ -21,7 +22,7 @@ async def safe_llm_call_async(
     
     Args:
         prompt: LLM prompt (should include anti-hallucination constraints)
-        validation_fn: Function that validates output (returns True if valid)
+        validation_fn: Function that validates output (returns True if valid). Can be sync or async.
         fallback_value: Value to return if validation fails or LLM errors
         max_retries: Number of retry attempts
         use_fast_model: Use fast_llm_call_async instead of smart_llm_call_async
@@ -39,8 +40,13 @@ async def safe_llm_call_async(
             if validation_fn is None:
                 return response
             
-            # Validate response
-            if validation_fn(response):
+            # Validate response - handle both sync and async validation functions
+            if inspect.iscoroutinefunction(validation_fn):
+                is_valid = await validation_fn(response)
+            else:
+                is_valid = validation_fn(response)
+            
+            if is_valid:
                 logger.info(f"Async LLM call succeeded (attempt {attempt + 1})")
                 return response
             else:

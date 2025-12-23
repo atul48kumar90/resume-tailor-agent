@@ -1,0 +1,55 @@
+# Cursor Rules for Resume Tailor Agent
+
+## 🛡️ CRITICAL: Anti-Hallucination Requirements
+
+**MANDATORY for ALL LLM-related code:**
+
+1. **Before writing any LLM call:**
+   - Read `docs/ANTI_HALLUCINATION_GUIDE.md`
+   - Use `core.llm_safe` module functions
+   - Include explicit "DO NOT" constraints in prompts
+   - Provide original source material in prompt
+   - Define validation function
+   - Define fallback behavior
+
+2. **Prompt Requirements:**
+   - Must include "HARD CONSTRAINTS" section
+   - Must include original source material
+   - Must specify output format (JSON schema)
+   - Must explicitly state what NOT to do
+
+3. **Validation Requirements:**
+   - Every LLM output must be validated
+   - Use `validate_grounded_in_source()` for text validation
+   - Use `validate_no_new_skills()` for skills
+   - Remove any content not grounded in source
+
+4. **Error Handling:**
+   - Always have fallback behavior
+   - Log validation failures
+   - Return safe defaults (empty dict/list) on error
+
+5. **Code Review:**
+   - Check anti-hallucination checklist before merging
+   - Verify validation functions exist
+   - Ensure prompts include constraints
+
+## Code Style
+
+- Use type hints for all functions
+- Follow existing patterns in codebase
+- Add docstrings for all public functions
+- Use logging instead of print statements
+
+## Testing
+
+- Write tests for hallucination scenarios
+- Test validation functions
+- Test fallback behavior
+
+## Documentation
+
+- Update `docs/ANTI_HALLUCINATION_GUIDE.md` if adding new patterns
+- Document all LLM usage points
+- Include examples in docstrings
+

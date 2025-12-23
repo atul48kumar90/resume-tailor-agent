@@ -95,11 +95,14 @@ async def process_batch_jds_async(
                 role=role_info["role"],
             )
             
-            # Score resume (sync - fast)
-            ats_score = score_detailed(
+            # Score resume (sync - fast) - using advanced scorer
+            from agents.ats_scorer_advanced import score_detailed_advanced
+            ats_score = score_detailed_advanced(
                 jd_keywords,
                 resume_text,
+                jd_data=jd_analysis,
                 inferred_skills=inferred_skills,
+                enable_semantic=False,  # Disable for batch performance
             )
             
             # Skill gap analysis (sync - fast)

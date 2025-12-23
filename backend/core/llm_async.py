@@ -56,7 +56,10 @@ class AsyncLLMClient:
             with attempt:
                 # Use JSON mode for structured outputs (if model supports it)
                 # gpt-4o and gpt-4o-mini support response_format
-                use_json_mode = self.model_name in ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+                # Only enable JSON mode if prompt explicitly mentions JSON (OpenAI requirement)
+                model_supports_json = self.model_name in ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo"]
+                prompt_mentions_json = "json" in prompt.lower() or "JSON" in prompt
+                use_json_mode = model_supports_json and prompt_mentions_json
                 
                 if use_json_mode:
                     response = await client.chat.completions.create(

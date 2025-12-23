@@ -7,7 +7,7 @@ from fastapi import (
     HTTPException,
     Body,
 )
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
 import logging
@@ -35,6 +35,9 @@ from agents.resume_rewriter import rewrite
 from agents.ats_scorer import (
     score_detailed,
     attribute_keywords_to_bullets,
+)
+from agents.ats_scorer_advanced import (
+    score_detailed_advanced,
 )
 
 from core.cache import get_cached_jd, set_cached_jd
@@ -228,7 +231,6 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str, parsed_r
     try:
         from agents.ats_scorer import score_detailed
         from agents.recruiter_persona import tune
-        from typing import Dict, Any, Optional
 
         jd_data = analyze_jd(jd)
         
@@ -253,12 +255,14 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str, parsed_r
                 "derived": [],
             }
         
-        # Calculate BEFORE score (on original resume)
-        before_ats = score_detailed(
+        # Calculate BEFORE score (on original resume) - using advanced scorer
+        before_ats = score_detailed_advanced(
             jd_data.get("ats_keywords", {}),
             resume,
+            jd_data=jd_data,
             inferred_skills=None,
-            parsed_resume_data=parsed_resume_data
+            parsed_resume_data=parsed_resume_data,
+            enable_semantic=False,  # Disable semantic for performance in background jobs
         )
         
         # Pass baseline keywords to rewrite function so it knows what to preserve
@@ -279,20 +283,60 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str, parsed_r
             parsed_experience = parsed_resume_data.get("experience", [])
             rewritten_experience = rewritten.get("experience", [])
             
+            # Track which rewritten experiences have been matched to avoid duplicates
+            matched_rewritten_indices = set()
+            
             # Match rewritten experience entries with parsed experience by company/title
             for parsed_exp in parsed_experience:
                 # Try to find matching rewritten experience entry
                 matching_rewritten = None
-                for rewritten_exp in rewritten_experience:
-                    # Match by company or title
-                    if (parsed_exp.get("company") and rewritten_exp.get("title") and 
-                        parsed_exp.get("company").lower() in rewritten_exp.get("title", "").lower()):
-                        matching_rewritten = rewritten_exp
-                        break
-                    elif (parsed_exp.get("title") and rewritten_exp.get("title") and
-                          parsed_exp.get("title").lower() in rewritten_exp.get("title", "").lower()):
-                        matching_rewritten = rewritten_exp
-                        break
+                matching_index = None
+                
+                for idx, rewritten_exp in enumerate(rewritten_experience):
+                    if idx in matched_rewritten_indices:
+                        continue  # Skip already matched entries
+                    
+                    # Normalize strings for comparison
+                    parsed_company = (parsed_exp.get("company") or "").lower().strip()
+                    parsed_title = (parsed_exp.get("title") or "").lower().strip()
+                    rewritten_title = (rewritten_exp.get("title") or "").lower().strip()
+                    
+                    # Extract company from rewritten title if it's in format "title | company"
+                    rewritten_company = ""
+                    if "|" in rewritten_title:
+                        parts = rewritten_title.split("|")
+                        if len(parts) == 2:
+                            rewritten_company = parts[1].strip()
+                            rewritten_title_only = parts[0].strip()
+                        else:
+                            rewritten_title_only = rewritten_title
+                    else:
+                        rewritten_title_only = rewritten_title
+                    
+                    # Match by company (more reliable)
+                    if parsed_company and rewritten_company:
+                        # Check if companies match (fuzzy match - one contains the other)
+                        if (parsed_company in rewritten_company or rewritten_company in parsed_company or
+                            parsed_company.replace(" ", "") == rewritten_company.replace(" ", "")):
+                            matching_rewritten = rewritten_exp
+                            matching_index = idx
+                            break
+                    
+                    # Match by title if company match fails
+                    if not matching_rewritten and parsed_title and rewritten_title_only:
+                        # Check if titles are similar (fuzzy match)
+                        if (parsed_title in rewritten_title_only or rewritten_title_only in parsed_title or
+                            parsed_title.replace(" ", "") == rewritten_title_only.replace(" ", "")):
+                            matching_rewritten = rewritten_exp
+                            matching_index = idx
+                            break
+                    
+                    # Fallback: check if parsed company is in rewritten title
+                    if not matching_rewritten and parsed_company and rewritten_title:
+                        if parsed_company in rewritten_title:
+                            matching_rewritten = rewritten_exp
+                            matching_index = idx
+                            break
                 
                 # Merge: use parsed metadata (company, title, dates, location) with rewritten bullets
                 merged_exp = {
@@ -306,22 +350,49 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str, parsed_r
                     "is_current": parsed_exp.get("is_current", False),
                 }
                 merged_experience.append(merged_exp)
+                
+                # Mark this rewritten experience as matched
+                if matching_index is not None:
+                    matched_rewritten_indices.add(matching_index)
             
-            # If there are rewritten experiences that don't match parsed ones, add them
-            for rewritten_exp in rewritten_experience:
-                # Check if this rewritten exp is already in merged_experience
+            # Only add rewritten experiences that don't match any parsed experience
+            # (This handles edge cases where LLM generated new experience entries)
+            for idx, rewritten_exp in enumerate(rewritten_experience):
+                if idx in matched_rewritten_indices:
+                    continue  # Already matched and merged
+                
+                # Check if this rewritten exp is already in merged_experience by title/company
                 already_merged = False
+                rewritten_title_lower = (rewritten_exp.get("title") or "").lower()
+                
                 for merged_exp in merged_experience:
-                    if rewritten_exp.get("title") and merged_exp.get("title") and \
-                       rewritten_exp.get("title").lower() in merged_exp.get("title", "").lower():
+                    merged_title_lower = (merged_exp.get("title") or "").lower()
+                    merged_company_lower = (merged_exp.get("company") or "").lower()
+                    
+                    # Check if rewritten title matches merged title or company
+                    if (rewritten_title_lower and merged_title_lower and 
+                        (rewritten_title_lower in merged_title_lower or merged_title_lower in rewritten_title_lower)):
+                        already_merged = True
+                        break
+                    if (rewritten_title_lower and merged_company_lower and 
+                        rewritten_title_lower in merged_company_lower):
                         already_merged = True
                         break
                 
                 if not already_merged:
-                    # Add as new entry (might be from original resume text that wasn't parsed)
+                    # Extract company and title from rewritten entry if in format "title | company"
+                    rewritten_title = rewritten_exp.get("title", "")
+                    rewritten_company = ""
+                    if "|" in rewritten_title:
+                        parts = rewritten_title.split("|")
+                        if len(parts) == 2:
+                            rewritten_title = parts[0].strip()
+                            rewritten_company = parts[1].strip()
+                    
+                    # Add as new entry (rare case - only if LLM generated something not in parsed data)
                     merged_experience.append({
-                        "company": "",
-                        "title": rewritten_exp.get("title", ""),
+                        "company": rewritten_company,
+                        "title": rewritten_title,
                         "start_date": "",
                         "end_date": "",
                         "location": "",
@@ -368,11 +439,13 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str, parsed_r
         from agents.resume_formatter import format_resume_text
         rewritten_text = format_resume_text(final)
         
-        after_ats = score_detailed(
+        after_ats = score_detailed_advanced(
             jd_data.get("ats_keywords", {}),
             rewritten_text,
+            jd_data=jd_data,
             inferred_skills=None,
-            parsed_resume_data=parsed_resume_data
+            parsed_resume_data=parsed_resume_data,
+            enable_semantic=False,  # Disable semantic for performance in background jobs
         )
         
         # 🚨 SMART ATS MONOTONICITY GUARD - Prevent regression but allow improvements
@@ -451,10 +524,16 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str, parsed_r
                 ),
             )
             
+            # Get explicit skills from parsed resume data if available
+            explicit_skills = None
+            if parsed_resume_data:
+                explicit_skills = parsed_resume_data.get("skills", [])
+            
             skill_gap_analysis = analyze_skill_gap(
                 jd_data.get("ats_keywords", {}),
                 resume,
-                inferred_skills
+                inferred_skills=inferred_skills,
+                explicit_skills=explicit_skills
             )
         except Exception as e:
             logger.warning(f"Failed to calculate skill gap analysis: {e}")
@@ -470,8 +549,21 @@ def process_resume_job(job_id: str, jd: str, resume: str, persona: str, parsed_r
             missing_skills.extend(missing_skills_dict.get("optional_skills", []))
             missing_skills.extend(missing_skills_dict.get("tools", []))
         
-        # Combine rejected skills and missing skills (remove duplicates)
-        all_pending_skills = list(dict.fromkeys(rejected_skills + missing_skills))
+        # Combine rejected skills and missing skills (remove duplicates and normalize)
+        # Prefer JD terminology when deduplicating
+        from agents.skill_normalizer import merge_skill_lists
+        # Get all JD skills as preferred forms
+        all_jd_skills = []
+        jd_keywords = jd_data.get("ats_keywords", {})
+        all_jd_skills.extend(jd_keywords.get("required_skills", []))
+        all_jd_skills.extend(jd_keywords.get("optional_skills", []))
+        all_jd_skills.extend(jd_keywords.get("tools", []))
+        
+        all_pending_skills = merge_skill_lists(
+            rejected_skills, 
+            missing_skills,
+            preferred_skills=all_jd_skills
+        )
         
         job_result = {
             "resume": final,
@@ -849,17 +941,58 @@ def approve_skills(
         parsed_experience = parsed_resume_data.get("experience", [])
         rewritten_experience = rewritten.get("experience", [])
         
+        # Track which rewritten experiences have been matched to avoid duplicates
+        matched_rewritten_indices = set()
+        
         for parsed_exp in parsed_experience:
             matching_rewritten = None
-            for rewritten_exp in rewritten_experience:
-                if (parsed_exp.get("company") and rewritten_exp.get("title") and 
-                    parsed_exp.get("company").lower() in rewritten_exp.get("title", "").lower()):
-                    matching_rewritten = rewritten_exp
-                    break
-                elif (parsed_exp.get("title") and rewritten_exp.get("title") and
-                      parsed_exp.get("title").lower() in rewritten_exp.get("title", "").lower()):
-                    matching_rewritten = rewritten_exp
-                    break
+            matching_index = None
+            
+            for idx, rewritten_exp in enumerate(rewritten_experience):
+                if idx in matched_rewritten_indices:
+                    continue  # Skip already matched entries
+                
+                # Normalize strings for comparison
+                parsed_company = (parsed_exp.get("company") or "").lower().strip()
+                parsed_title = (parsed_exp.get("title") or "").lower().strip()
+                rewritten_title = (rewritten_exp.get("title") or "").lower().strip()
+                
+                # Extract company from rewritten title if it's in format "title | company"
+                rewritten_company = ""
+                if "|" in rewritten_title:
+                    parts = rewritten_title.split("|")
+                    if len(parts) == 2:
+                        rewritten_company = parts[1].strip()
+                        rewritten_title_only = parts[0].strip()
+                    else:
+                        rewritten_title_only = rewritten_title
+                else:
+                    rewritten_title_only = rewritten_title
+                
+                # Match by company (more reliable)
+                if parsed_company and rewritten_company:
+                    # Check if companies match (fuzzy match - one contains the other)
+                    if (parsed_company in rewritten_company or rewritten_company in parsed_company or
+                        parsed_company.replace(" ", "") == rewritten_company.replace(" ", "")):
+                        matching_rewritten = rewritten_exp
+                        matching_index = idx
+                        break
+                
+                # Match by title if company match fails
+                if not matching_rewritten and parsed_title and rewritten_title_only:
+                    # Check if titles are similar (fuzzy match)
+                    if (parsed_title in rewritten_title_only or rewritten_title_only in parsed_title or
+                        parsed_title.replace(" ", "") == rewritten_title_only.replace(" ", "")):
+                        matching_rewritten = rewritten_exp
+                        matching_index = idx
+                        break
+                
+                # Fallback: check if parsed company is in rewritten title
+                if not matching_rewritten and parsed_company and rewritten_title:
+                    if parsed_company in rewritten_title:
+                        matching_rewritten = rewritten_exp
+                        matching_index = idx
+                        break
             
             merged_exp = {
                 "company": parsed_exp.get("company", ""),
@@ -872,6 +1005,53 @@ def approve_skills(
                 "is_current": parsed_exp.get("is_current", False),
             }
             merged_experience.append(merged_exp)
+            
+            # Mark this rewritten experience as matched
+            if matching_index is not None:
+                matched_rewritten_indices.add(matching_index)
+        
+        # Only add unmatched rewritten experiences (should be rare)
+        for idx, rewritten_exp in enumerate(rewritten_experience):
+            if idx in matched_rewritten_indices:
+                continue  # Already matched and merged
+            
+            # Check if already merged
+            already_merged = False
+            rewritten_title_lower = (rewritten_exp.get("title") or "").lower()
+            
+            for merged_exp in merged_experience:
+                merged_title_lower = (merged_exp.get("title") or "").lower()
+                merged_company_lower = (merged_exp.get("company") or "").lower()
+                
+                if (rewritten_title_lower and merged_title_lower and 
+                    (rewritten_title_lower in merged_title_lower or merged_title_lower in rewritten_title_lower)):
+                    already_merged = True
+                    break
+                if (rewritten_title_lower and merged_company_lower and 
+                    rewritten_title_lower in merged_company_lower):
+                    already_merged = True
+                    break
+            
+            if not already_merged:
+                # Extract company and title from rewritten entry if in format "title | company"
+                rewritten_title = rewritten_exp.get("title", "")
+                rewritten_company = ""
+                if "|" in rewritten_title:
+                    parts = rewritten_title.split("|")
+                    if len(parts) == 2:
+                        rewritten_title = parts[0].strip()
+                        rewritten_company = parts[1].strip()
+                
+                merged_experience.append({
+                    "company": rewritten_company,
+                    "title": rewritten_title,
+                    "start_date": "",
+                    "end_date": "",
+                    "location": "",
+                    "description": "",
+                    "bullets": rewritten_exp.get("bullets", []),
+                    "is_current": False,
+                })
         
         final_resume = {
             "contact": parsed_resume_data.get("contact", {}),
@@ -900,12 +1080,14 @@ def approve_skills(
     final = tune(final_resume, "general")
     rewritten_text = format_resume_text(final)
     
-    # Recalculate ATS score
-    after_ats = score_detailed(
+    # Recalculate ATS score - using advanced scorer
+    after_ats = score_detailed_advanced(
         ats_keywords,
         rewritten_text,
+        jd_data=result.get("jd_analysis"),
         inferred_skills=None,
-        parsed_resume_data=parsed_resume_data
+        parsed_resume_data=parsed_resume_data,
+        enable_semantic=False,
     )
     
     # Recalculate skill gap analysis with approved skills included
@@ -925,10 +1107,13 @@ def approve_skills(
         )
         
         # Recalculate skill gap - approved skills should no longer be missing
+        # Pass explicit skills from final resume to ensure approved skills are checked
+        explicit_skills = final.get("skills", [])
         skill_gap_analysis = analyze_skill_gap(
             ats_keywords,
             rewritten_text,
-            inferred_skills
+            inferred_skills=inferred_skills,
+            explicit_skills=explicit_skills  # Include approved skills explicitly
         )
     except Exception as e:
         logger.warning(f"Failed to recalculate skill gap analysis: {e}")
@@ -964,6 +1149,208 @@ def approve_skills(
         "status": "completed",
         "result": updated_result,
     }
+
+
+@router.post("/jobs/{job_id}/calculate-ats")
+def calculate_ats_from_text(
+    job_id: str,
+    edited_text: str = Body(..., embed=True),
+):
+    """
+    Calculate ATS score from edited text without saving changes.
+    Allows users to preview ATS score impact before applying changes.
+    
+    Args:
+        job_id: Job ID
+        edited_text: The edited resume text to calculate score for
+    
+    Returns:
+        ATS score for the edited text
+    """
+    from core.job_queue import get_job_status
+    from agents.ats_scorer_advanced import score_detailed_advanced_sync
+    from agents.resume_parser import parse_resume_async
+    import asyncio
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    # Validate job ID
+    try:
+        job_id = validate_job_id(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Sanitize input
+    edited_text = sanitize_resume_text(edited_text)
+    
+    if not edited_text or len(edited_text.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Edited text is too short or empty")
+    
+    # Get current job result to get JD keywords
+    rq_status = get_job_status(job_id)
+    job = get_job(job_id)
+    
+    result = None
+    if rq_status and rq_status.get("result"):
+        result = rq_status["result"]
+    elif job and job.get("result"):
+        result = job["result"]
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Job not found or not completed")
+    
+    try:
+        # Get JD keywords from job result
+        jd_analysis = result.get("jd_analysis", {})
+        jd_keywords = jd_analysis.get("ats_keywords", {})
+        
+        if not jd_keywords:
+            raise HTTPException(
+                status_code=400,
+                detail="Job description keywords not found. Cannot calculate ATS score."
+            )
+        
+        # Parse the edited text to get structured data (for better scoring)
+        parsed_resume_data = result.get("parsed_resume_data")
+        
+        # Try to parse edited text (use async in sync context)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Parse edited text (optional - can use raw text if parsing fails)
+        try:
+            parsed_edited = loop.run_until_complete(
+                parse_resume_async(edited_text, use_cache=False)
+            )
+        except Exception as e:
+            logger.warning(f"Failed to parse edited text, using raw text: {e}")
+            parsed_edited = None
+        
+        # Calculate ATS score using advanced scorer
+        ats_result = score_detailed_advanced_sync(
+            jd_keywords=jd_keywords,
+            resume_text=edited_text,
+            jd_data=jd_analysis,
+            parsed_resume_data=parsed_edited or parsed_resume_data,
+            enable_semantic=False,  # Disable for performance
+        )
+        
+        logger.info(f"Calculated ATS score for edited text: {ats_result.get('score')}")
+        
+        return {
+            "job_id": job_id,
+            "score": ats_result.get("score", 0),
+            "details": {
+                "matched_keywords": ats_result.get("matched_keywords", {}),
+                "missing_required": ats_result.get("missing_required", []),
+                "coverage": ats_result.get("coverage", {}),
+            },
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to calculate ATS score from text: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to calculate ATS score: {str(e)}"
+        )
+
+
+@router.post("/jobs/{job_id}/update-resume")
+def update_resume_from_text(
+    job_id: str,
+    edited_text: str = Body(..., embed=True),
+):
+    """
+    Update resume from edited text.
+    Parses the edited text back into structured format and updates the job result.
+    
+    Args:
+        job_id: Job ID
+        edited_text: The edited resume text from the user
+    
+    Returns:
+        Updated job result with parsed resume
+    """
+    from core.job_queue import get_job_status
+    from agents.resume_parser import parse_resume_async
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    # Validate job ID
+    try:
+        job_id = validate_job_id(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    # Sanitize input
+    edited_text = sanitize_resume_text(edited_text)
+    
+    if not edited_text or len(edited_text.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Edited text is too short or empty")
+    
+    # Get current job result
+    rq_status = get_job_status(job_id)
+    job = get_job(job_id)
+    
+    result = None
+    if rq_status and rq_status.get("result"):
+        result = rq_status["result"]
+    elif job and job.get("result"):
+        result = job["result"]
+    
+    if not result:
+        raise HTTPException(status_code=404, detail="Job not found or not completed")
+    
+    try:
+        # Parse the edited text back into structured format
+        # Use LLM to parse the text back into structured format
+        from agents.resume_parser import parse_resume
+        import asyncio
+        
+        # Parse synchronously (using async function in sync context)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        updated_resume = loop.run_until_complete(
+            parse_resume_async(edited_text, use_cache=False)
+        )
+        
+        # Preserve contact info from original if not in edited text
+        original_resume = result.get("resume", {})
+        if original_resume.get("contact") and not updated_resume.get("contact"):
+            updated_resume["contact"] = original_resume["contact"]
+        
+        # Update job result
+        updated_result = {
+            **result,
+            "resume": updated_resume,
+            "edited_by_user": True,  # Flag to indicate user made manual edits
+        }
+        
+        update_job(job_id, updated_result)
+        
+        logger.info(f"Resume updated from edited text for job {job_id}")
+        
+        return {
+            "job_id": job_id,
+            "updated": True,
+            "updated_resume": updated_resume,
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to update resume from text: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update resume: {str(e)}"
+        )
 
 
 @router.get("/jobs/{job_id}/download")
@@ -1292,13 +1679,15 @@ async def compare_ats(
     }
 
     # -----------------------------
-    # 8️⃣ ATS score BEFORE rewrite
+    # 8️⃣ ATS score BEFORE rewrite (Advanced Scorer)
     # -----------------------------
-    before = score_detailed(
+    before = score_detailed_advanced(
         jd_keywords_all,
         resume_text,
+        jd_data=jd_data,
         inferred_skills=inferred_skills,  # ✅ evidence-gated scoring
         parsed_resume_data=parsed_resume_data,  # Use parsed data for better scoring
+        enable_semantic=False,  # Disable for performance in API calls
     )
 
     # -----------------------------
@@ -1344,13 +1733,15 @@ async def compare_ats(
         rewritten_text = resume_text
 
     # -----------------------------
-    # 🔟 ATS score AFTER rewrite
+    # 🔟 ATS score AFTER rewrite (Advanced Scorer)
     # -----------------------------
-    after = score_detailed(
+    after = score_detailed_advanced(
         jd_keywords_all,
         rewritten_text,
+        jd_data=jd_data,
         inferred_skills=inferred_skills,
         parsed_resume_data=parsed_resume_data,  # Use same parsed data for consistency
+        enable_semantic=False,  # Disable for performance in API calls
     )
 
     # 🚨 ATS MONOTONICITY GUARD (MANDATORY)
@@ -1817,12 +2208,30 @@ def get_skill_gap_analysis(job_id: str):
         else:
             skill_match_percentage = 0
         
-        # Flatten missing skills
+        # Flatten missing skills and deduplicate
         missing_skills_flat = []
         missing_skills_dict = skill_gap.get("missing_skills", {})
         missing_skills_flat.extend(missing_skills_dict.get("required_skills", []))
         missing_skills_flat.extend(missing_skills_dict.get("optional_skills", []))
         missing_skills_flat.extend(missing_skills_dict.get("tools", []))
+        
+        # Deduplicate and normalize similar skills, preferring JD terminology
+        from agents.skill_normalizer import deduplicate_skills
+        # Get JD skills from the job result if available
+        jd_analysis = result.get("jd_analysis", {})
+        jd_keywords = jd_analysis.get("ats_keywords", {}) if isinstance(jd_analysis, dict) else {}
+        all_jd_skills = []
+        if isinstance(jd_keywords, dict):
+            all_jd_skills.extend(jd_keywords.get("required_skills", []))
+            all_jd_skills.extend(jd_keywords.get("optional_skills", []))
+            all_jd_skills.extend(jd_keywords.get("tools", []))
+        elif isinstance(jd_keywords, list):
+            all_jd_skills = jd_keywords
+        
+        missing_skills_flat = deduplicate_skills(
+            missing_skills_flat,
+            preferred_skills=all_jd_skills
+        )
         
         # Extract recommended skills from recommendations
         recommended_skills = []

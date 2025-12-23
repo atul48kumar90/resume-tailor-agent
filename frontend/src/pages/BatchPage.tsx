@@ -18,7 +18,8 @@ const BatchPage: React.FC = () => {
     },
   });
 
-  const handleJdFileAdd = (file: File) => {
+  const handleJdFileAdd = (file: File | null) => {
+    if (!file) return;
     if (jdFiles.length >= 20) {
       toast.error('Maximum 20 job descriptions allowed');
       return;
@@ -41,7 +42,7 @@ const BatchPage: React.FC = () => {
 
     const formData = new FormData();
     formData.append('resume', resumeFile);
-    jdFiles.forEach((file, index) => {
+    jdFiles.forEach((file) => {
       formData.append('jd_files', file);
     });
 

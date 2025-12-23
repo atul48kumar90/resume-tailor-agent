@@ -7,6 +7,7 @@ import SkillGapAnalysis from '../components/results/SkillGapAnalysis';
 import ResumePreview from '../components/results/ResumePreview';
 import DownloadButtons from '../components/results/DownloadButtons';
 import SkillApproval from '../components/results/SkillApproval';
+import ChatWindow from '../components/common/ChatWindow';
 import { getJobStatus, getATSCompare, getSkillGap } from '../services/api';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 
@@ -15,6 +16,35 @@ const ResultsPage: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [shouldPoll, setShouldPoll] = useState(true);
+  const [showChat, setShowChat] = useState(false);
+  const [selectedContext, setSelectedContext] = useState<string>('');
+
+  // Helper function to format resume text
+  const formatResumeText = (resume: any): string => {
+    if (typeof resume === 'string') return resume;
+    
+    let formatted = '';
+    if (resume.summary) {
+      formatted += `SUMMARY\n${resume.summary}\n\n`;
+    }
+    if (resume.experience && Array.isArray(resume.experience)) {
+      formatted += 'EXPERIENCE\n';
+      resume.experience.forEach((exp: any) => {
+        if (exp.title) formatted += `${exp.title}\n`;
+        if (exp.company) formatted += `${exp.company}\n`;
+        if (exp.bullets && Array.isArray(exp.bullets)) {
+          exp.bullets.forEach((bullet: string) => {
+            formatted += `• ${bullet}\n`;
+          });
+        }
+        formatted += '\n';
+      });
+    }
+    if (resume.skills && Array.isArray(resume.skills)) {
+      formatted += `SKILLS\n${resume.skills.join(', ')}\n`;
+    }
+    return formatted;
+  };
 
   // Poll job status
   // Always enable the query so it can check status, but control polling via refetchInterval
@@ -48,14 +78,14 @@ const ResultsPage: React.FC = () => {
   }, [jobStatus]);
 
   // Get ATS comparison when job is completed
-  const { data: atsData, isLoading: atsLoading } = useQuery({
+  const { data: atsData } = useQuery({
     queryKey: ['atsCompare', jobId],
     queryFn: () => getATSCompare(jobId!),
     enabled: !!jobId && jobStatus?.status === 'completed',
   });
 
   // Get skill gap analysis
-  const { data: skillGap, isLoading: skillGapLoading } = useQuery({
+  const { data: skillGap } = useQuery({
     queryKey: ['skillGap', jobId],
     queryFn: () => getSkillGap(jobId!),
     enabled: !!jobId && jobStatus?.status === 'completed',
@@ -215,10 +245,49 @@ const ResultsPage: React.FC = () => {
 
       {/* Resume Preview */}
       {jobStatus.result && (
-        <ResumePreview
-          originalResume={jobStatus.result.original_resume}
-          tailoredResume={jobStatus.result.resume || jobStatus.result.rewritten}
-        />
+        <div className="space-y-4">
+          <ResumePreview
+            originalResume={jobStatus.result.original_resume}
+            tailoredResume={jobStatus.result.resume || jobStatus.result.rewritten}
+            jobId={jobId}
+            currentATSScore={atsData?.after?.score || jobStatus.result?.ats?.after?.score}
+            onTextSelect={(text) => {
+              setSelectedContext(text);
+              setShowChat(true);
+            }}
+            onResumeUpdate={() => {
+              // Invalidate queries to refresh data
+              queryClient.invalidateQueries({ queryKey: ['jobStatus', jobId] });
+              queryClient.invalidateQueries({ queryKey: ['atsCompare', jobId] });
+              queryClient.invalidateQueries({ queryKey: ['skillGap', jobId] });
+            }}
+          />
+          
+          {/* Chat Window - Floating or Side Panel */}
+          {showChat && (
+            <div className="fixed bottom-4 right-4 w-96 h-[600px] z-50">
+              <ChatWindow
+                jobId={jobId}
+                context={selectedContext || formatResumeText(jobStatus.result.resume || jobStatus.result.rewritten)}
+                onClose={() => setShowChat(false)}
+                title="Resume Editor Chat"
+              />
+            </div>
+          )}
+          
+          {/* Chat Toggle Button */}
+          {!showChat && (
+            <button
+              onClick={() => setShowChat(true)}
+              className="fixed bottom-4 right-4 bg-blue-500 text-white px-4 py-3 rounded-full shadow-lg hover:bg-blue-600 transition-colors flex items-center gap-2 z-40"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <span>Chat with AI</span>
+            </button>
+          )}
+        </div>
       )}
 
       {/* Download Section */}

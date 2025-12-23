@@ -1,0 +1,113 @@
+services:
+  # Main application (Frontend + Backend)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resume-tailor-app
+    ports:
+      - "8000:8000"
+    environment:
+      # OpenAI API Key (required)
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      
+      # Redis Configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      
+      # PostgreSQL Configuration
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/resume_tailor
+      DATABASE_URL_SYNC: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/resume_tailor
+      
+      # CORS - Allow all origins in production (adjust as needed)
+      CORS_ORIGINS: "*"
+      
+      # Optional: File upload settings
+      MAX_FILE_SIZE_MB: 10
+      ENABLE_VIRUS_SCAN: "false"  # Set to true if ClamAV is available
+      
+      # Optional: Rate limiting
+      RATE_LIMIT_REQUESTS: 100
+      RATE_LIMIT_WINDOW: 3600
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - resume-tailor-network
+
+  # RQ Worker for background jobs
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resume-tailor-worker
+    command: python -m workers.job_worker
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/resume_tailor
+      DATABASE_URL_SYNC: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/resume_tailor
+      # macOS fork safety (if needed)
+      OBJC_DISABLE_INITIALIZE_FORK_SAFETY: "YES"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - resume-tailor-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: resume-tailor-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: resume_tailor
+    ports:
+      - "5433:5432"  # Changed to 5433 to avoid conflict with local PostgreSQL
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - resume-tailor-network
+
+  # Redis Cache & Job Queue
+  redis:
+    image: redis:7-alpine
+    container_name: resume-tailor-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - resume-tailor-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  resume-tailor-network:
+    driver: bridge
+

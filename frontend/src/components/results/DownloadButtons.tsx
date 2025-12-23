@@ -7,7 +7,7 @@ interface DownloadButtonsProps {
   resumeData?: any; // Optional fallback for backward compatibility
 }
 
-const DownloadButtons: React.FC<DownloadButtonsProps> = ({ jobId, resumeData }) => {
+const DownloadButtons: React.FC<DownloadButtonsProps> = ({ jobId }) => {
   const [downloading, setDownloading] = useState<string | null>(null);
 
   const handleDownload = async (format: 'docx' | 'pdf' | 'txt' | 'zip') => {

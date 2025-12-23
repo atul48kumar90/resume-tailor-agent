@@ -202,3 +202,60 @@ export const batchProcess = async (formData: FormData): Promise<any> => {
   return response.json();
 };
 
+// Chat API
+export interface ChatRequest {
+  message: string;
+  context?: string;
+  job_id?: string;
+  chat_history?: Array<{ role: string; content: string }>;
+}
+
+export interface ChatResponse {
+  response: string;
+  suggestions?: string[];
+}
+
+export const sendChatMessage = async (request: ChatRequest): Promise<ChatResponse> => {
+  const response = await fetch(`${API_BASE_URL}/chat/resume-edit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || 'Failed to send chat message');
+  }
+
+  return response.json();
+};
+
+export const applySuggestion = async (
+  jobId: string,
+  section: string,
+  originalText: string,
+  suggestedText: string
+) => {
+  const response = await fetch(`${API_BASE_URL}/chat/apply-suggestion`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      job_id: jobId,
+      section,
+      original_text: originalText,
+      suggested_text: suggestedText,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || 'Failed to apply suggestion');
+  }
+
+  return response.json();
+};
+

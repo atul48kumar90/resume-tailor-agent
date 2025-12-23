@@ -4,12 +4,14 @@ Skill gap analysis - identifies missing skills and provides recommendations.
 """
 from typing import Dict, List, Any
 from agents.ats_scorer import _tokenize, _match_keyword
+from agents.skill_normalizer import deduplicate_skills, are_skills_similar
 
 
 def analyze_skill_gap(
     jd_keywords: Dict[str, List[str]],
     resume_text: str,
-    inferred_skills: List[Dict[str, Any]] = None
+    inferred_skills: List[Dict[str, Any]] = None,
+    explicit_skills: List[str] = None
 ) -> Dict[str, Any]:
     """
     Analyze skill gaps between JD requirements and resume.
@@ -18,11 +20,18 @@ def analyze_skill_gap(
         jd_keywords: JD keywords organized by category
         resume_text: Resume text
         inferred_skills: Skills inferred from resume (optional)
+        explicit_skills: Explicit skills list from resume (e.g., from skills section) (optional)
     
     Returns:
         Skill gap analysis with missing skills, recommendations, etc.
     """
     resume_tokens = _tokenize(resume_text)
+    
+    # Also tokenize explicit skills if provided (e.g., from skills section)
+    explicit_skills_tokens = set()
+    if explicit_skills:
+        for skill in explicit_skills:
+            explicit_skills_tokens.update(_tokenize(skill))
     
     # Track which skills are present
     present_skills = {
@@ -40,24 +49,72 @@ def analyze_skill_gap(
     # Check each category
     for category in ["required_skills", "optional_skills", "tools"]:
         for skill in jd_keywords.get(category, []):
-            if _match_keyword(skill, resume_tokens):
+            # Check if skill matches in resume text
+            matched = _match_keyword(skill, resume_tokens)
+            
+            # Also check explicit skills list if available (using normalization)
+            if not matched and explicit_skills:
+                for explicit_skill in explicit_skills:
+                    if are_skills_similar(skill, explicit_skill, threshold=0.75):
+                        matched = True
+                        break
+            
+            if matched:
                 present_skills[category].append(skill)
             else:
                 missing_skills[category].append(skill)
     
+    # Deduplicate skills within each category, preferring JD terminology
+    # Get all JD skills as preferred forms
+    all_jd_skills = []
+    for category in ["required_skills", "optional_skills", "tools"]:
+        all_jd_skills.extend(jd_keywords.get(category, []))
+    
+    for category in ["required_skills", "optional_skills", "tools"]:
+        # Use JD skills from this category as preferred forms
+        category_jd_skills = jd_keywords.get(category, [])
+        present_skills[category] = deduplicate_skills(
+            present_skills[category], 
+            preferred_skills=category_jd_skills
+        )
+        missing_skills[category] = deduplicate_skills(
+            missing_skills[category], 
+            preferred_skills=category_jd_skills
+        )
+    
     # Add inferred skills to present skills
+    # Also check for approved skills in resume text (e.g., "RESTful APIs" should match "REST")
     if inferred_skills:
         inferred_skill_names = [s["skill"] for s in inferred_skills if s.get("confidence", 0) >= 0.8]
         for skill_name in inferred_skill_names:
-            # Check if this inferred skill matches any JD requirement
+            # Check if this inferred skill matches any JD requirement using proper normalization
             for category in ["required_skills", "optional_skills", "tools"]:
                 for jd_skill in jd_keywords.get(category, []):
-                    if skill_name.lower() in jd_skill.lower() or jd_skill.lower() in skill_name.lower():
-                        if skill_name not in present_skills[category]:
-                            present_skills[category].append(skill_name)
+                    # Use skill similarity check instead of simple substring matching
+                    if are_skills_similar(skill_name, jd_skill, threshold=0.75):
+                        # Mark JD skill as present (use JD terminology)
+                        if jd_skill not in present_skills[category]:
+                            present_skills[category].append(jd_skill)
                         # Remove from missing if it was there
-                        if skill_name in missing_skills[category]:
-                            missing_skills[category].remove(skill_name)
+                        if jd_skill in missing_skills[category]:
+                            missing_skills[category].remove(jd_skill)
+    
+    # Also check resume text for approved skills that might match missing JD skills
+    # This handles cases where approved skills like "RESTful APIs" should match "REST" in JD
+    # Extract skills from resume text (look for common patterns)
+    resume_lower = resume_text.lower()
+    for category in ["required_skills", "optional_skills", "tools"]:
+        for jd_skill in jd_keywords.get(category, []):
+            # If JD skill is still missing, check if any variation appears in resume
+            if jd_skill in missing_skills[category]:
+                # Check if resume contains a variation of this skill
+                # Use _match_keyword which already handles variations
+                if _match_keyword(jd_skill, resume_tokens):
+                    # Found a match - move from missing to present
+                    if jd_skill not in present_skills[category]:
+                        present_skills[category].append(jd_skill)
+                    if jd_skill in missing_skills[category]:
+                        missing_skills[category].remove(jd_skill)
     
     # Calculate coverage
     total_required = len(jd_keywords.get("required_skills", []))

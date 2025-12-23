@@ -19,6 +19,8 @@ nltk
 python-docx
 pypdf
 PyPDF2
+pdfplumber
+reportlab
 
 rich
 loguru
